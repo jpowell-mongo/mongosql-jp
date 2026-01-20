@@ -789,6 +789,7 @@ mod all_fields_always_nullable {
         })
     );
 }
+
 mod mixed_field_nullability {
 
     use super::*;
