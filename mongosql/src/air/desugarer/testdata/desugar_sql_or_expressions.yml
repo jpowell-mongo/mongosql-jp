@@ -1,0 +1,22 @@
+tests:
+  - name: "nothing to desugar"
+    input:
+      - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
+  - name: "desugar top level $sqlOr"
+    input:
+      - { $match: { $expr: { $sqlOr: [ “$a”, “$b” ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
+  - name: "desugar complex $sqlOr"
+    input:
+      - { $match: { $expr: { $sqlOr: [ { quantity: { $lt: 20 } }, { price: 10 } ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ { quantity: { $lt: 20 } }, { price: 10 } ] } } }
+# [TODO] Desugar an Or for a pipeline that would be translated from a nested subquery
+  - name: "desugar nested $sqlOr (a OR (b OR c))"
+    input:
+      - { $match: { $expr: { $sqlOr: [ { quantity: { $lt: 20 } }, { $sqlOr: [ { price: 10 }, { price: 20 } ] } ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ { quantity: { $lt: 20 } }, { $or: [ { price: 10 }, { price: 20 } ] } ] } } }

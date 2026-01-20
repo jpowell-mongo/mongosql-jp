@@ -11,6 +11,8 @@ mod sql_null_semantics_operators;
 use crate::air::desugarer::sql_null_semantics_operators::SqlNullSemanticsOperatorsDesugarerPass;
 mod fold_converts;
 use crate::air::desugarer::fold_converts::FoldConvertsDesugarerPass;
+use crate::air::desugarer::or_expressions::OrExpressionsDesugarerPass;
+
 mod subquery;
 use crate::air::desugarer::subquery::SubqueryExprDesugarerPass;
 mod unsupported_operators;
@@ -18,6 +20,7 @@ use crate::air::desugarer::unsupported_operators::UnsupportedOperatorsDesugarerP
 mod remove_id;
 use crate::air::desugarer::remove_id::RemoveIdDesugarerPass;
 
+mod or_expressions;
 #[cfg(test)]
 mod test;
 mod util;
@@ -49,6 +52,7 @@ pub fn desugar_pipeline(pipeline: air::Stage) -> Result<air::Stage> {
         &AccumulatorsDesugarerPass,
         &SubqueryExprDesugarerPass,
         &UnsupportedOperatorsDesugarerPass,
+        &OrExpressionsDesugarerPass,
         &SqlNullSemanticsOperatorsDesugarerPass,
         &FoldConvertsDesugarerPass,
         &RemoveIdDesugarerPass,

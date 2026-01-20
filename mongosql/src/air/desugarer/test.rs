@@ -117,6 +117,16 @@ mod sql_null_semantics {
     );
 }
 
+mod or_expressions {
+    use super::*;
+    use crate::air::desugarer::or_expressions::OrExpressionsDesugarerPass;
+
+    test_desugarer!(
+        file = "desugar_sql_or_expressions.yml",
+        desugarer = OrExpressionsDesugarerPass
+    );
+}
+
 mod fold_converts {
     use super::*;
     use crate::air::desugarer::remove_id::RemoveIdDesugarerPass;
