@@ -11,12 +11,19 @@ tests:
       - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
   - name: "desugar complex $sqlOr"
     input:
-      - { $match: { $expr: { $sqlOr: [ { quantity: { $lt: 20 } }, { price: 10 } ] } } }
+    # Invert these to match the $expr syntax rather than default mongo match syntax
+    # Also be sure to use the $sqlGt and other sql operators to validate those are translated correctly be the desugarer
+      - { $match: { $expr: { $sqlOr: [ { $sqlGt: ['$a', 100] }, { $sqlGt: ['$b', 3000] } ] } } }
     expected:
-      - { $match: { $expr: { $or: [ { quantity: { $lt: 20 } }, { price: 10 } ] } } }
+      - { $match: { $expr: { $or: [ { $gt: ['$a', 100] }, { $gt: ['$b', 3000] } ] } } }
 # [TODO] Desugar an Or for a pipeline that would be translated from a nested subquery
-  - name: "desugar nested $sqlOr (a OR (b OR c))"
-    input:
-      - { $match: { $expr: { $sqlOr: [ { quantity: { $lt: 20 } }, { $sqlOr: [ { price: 10 }, { price: 20 } ] } ] } } }
-    expected:
-      - { $match: { $expr: { $or: [ { quantity: { $lt: 20 } }, { $or: [ { price: 10 }, { price: 20 } ] } ] } } }
+# [TODO] format using the correct $expr syntax instead of match syntax
+#  - name: "desugar nested $sqlOr (a OR (b OR c))"
+#    input:
+#      - { $match: { $expr: { $sqlOr: [ { quantity: { $lt: 20 } }, { $sqlOr: [ { price: 10 }, { price: 20 } ] } ] } } }
+#    expected:
+#      - { $match: { $expr: { $or: [ { quantity: { $lt: 20 } }, { $or: [ { price: 10 }, { price: 20 } ] } ] } } }
+# [TODO] a AND (b OR c)
+# [TODO] nothing to desugar test that validates rewrites to or (and other sql semantic operators) only happens for filter stages
+# [TODO] OR with Subsquery that has a filter stage with a sql semantic AND and it does not get flipped
+# [TODO] OR with Subsquery that has a filter stage with a sql semantic or, and we validate that everything is flipped
