@@ -70,7 +70,7 @@ impl OrExpressionsDesugarerVisitor {
 
 impl Visitor for OrExpressionsDesugarerVisitor {
     fn visit_expression(&mut self, node: Expression) -> Expression {
-        let node = match node {
+        match node {
             SqlSemanticOperator(s) => match s.op {
                 SqlOperator::Or => {
                     self.is_within_or_context = true;
@@ -86,22 +86,21 @@ impl Visitor for OrExpressionsDesugarerVisitor {
             },
             //    Subquery, SubqueryComparison, and SubqueryExists have their own scopes,
             //    so we reset is_within_or_context to false when we see them.
+            //    [TODO] Get more specific about why you do this - Also walk in the context of a FilterStageVisitor
             Subquery(s) => {
                 self.is_within_or_context = false;
-                Subquery(s)
+                Subquery(s).walk(&mut FilterStageDesugarerVisitor::default())
             }
             SubqueryComparison(s) => {
                 self.is_within_or_context = false;
-                SubqueryComparison(s)
+                SubqueryComparison(s).walk(&mut FilterStageDesugarerVisitor::default())
             }
             SubqueryExists(s) => {
                 self.is_within_or_context = false;
-                SubqueryExists(s)
+                SubqueryExists(s).walk(&mut FilterStageDesugarerVisitor::default())
             }
 
             _ => node,
-        };
-
-        node.walk(self)
+        }
     }
 }
