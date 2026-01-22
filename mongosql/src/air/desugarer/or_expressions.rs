@@ -84,6 +84,8 @@ impl Visitor for OrExpressionsDesugarerVisitor {
                     desugared_parent.walk(self)
                 }
             },
+            //    Subquery, SubqueryComparison, and SubqueryExists have their own scopes,
+            //    so we reset is_within_or_context to false when we see them.
             Subquery(s) => {
                 self.is_within_or_context = false;
                 Subquery(s)
