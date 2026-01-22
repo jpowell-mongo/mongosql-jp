@@ -1,22 +1,31 @@
 tests:
   - name: "nothing to desugar"
-    skip_reason: "ignore"
     input:
       - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
     expected:
       - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
-  - name: "desugar top level $sqlOr"
-    skip_reason: "ignore"
+  - name: "Top Level OR"
     input:
       - { $match: { $expr: { $sqlOr: [ “$a”, “$b” ] } } }
     expected:
       - { $match: { $expr: { $or: [ “$a”, “$b” ] } } }
-# [TODO] nothing to desugar test that validates rewrites to or (and other sql semantic operators) only happens for filter stages
-# [TODO] OR with Subsquery that has a filter stage with a sql semantic AND and it does not get flipped
-# [TODO] OR with Subsquery that has a filter stage with a sql semantic or, and we validate that everything is flipped
+  - name: "OR with subquery containing filter stage with $sqlAnd (not flipped)"
+    input:
+      - { $match: { $expr: { $sqlOr: [ '$a', { $subqueryExists: { collection: 'bar', pipeline: [ { $match: { $expr: { $sqlAnd: [ '$b', '$c' ] } } } ] } } ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ '$a', { $subqueryExists: { collection: 'bar', pipeline: [ { $match: { $expr: { $sqlAnd: [ '$b', '$c' ] } } } ] } } ] } } }
+  - name: "OR with subquery containing filter stage with $sqlOr (both flipped)"
+    input:
+      - { $match: { $expr: { $sqlOr: [ '$a', { $subqueryExists: { collection: 'bar', pipeline: [ { $match: { $expr: { $sqlOr: [ '$b', '$c' ] } } } ] } } ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ '$a', { $subqueryExists: { collection: 'bar', pipeline: [ { $match: { $expr: { $or: [ '$b', '$c' ] } } } ] } } ] } } }
+  - name: "OR with $subquery in project stage with $sqlOr (not flipped in subquery)"
+    input:
+      - { $match: { $expr: { $sqlOr: [ '$a', { $subquery: { collection: 'bar', outputPath: [ 'x' ], pipeline: [ { $project: { x: { $sqlOr: [ '$b', '$c' ] } } } ] } } ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ '$a', { $subquery: { collection: 'bar', outputPath: [ 'x' ], pipeline: [ { $project: { x: { $sqlOr: [ '$b', '$c' ] } } } ] } } ] } } }
 
-  - name: "no desugar outside filter stages"
-    skip_reason: "ignore"
+  - name: "No desugar outside filter stages"
     input:
       - { $project: { _id: 0, expr: { $sqlOr: [ '$a', '$b' ] } } }
     expected:
@@ -27,14 +36,12 @@ tests:
       - { $match: { $expr: { $sqlAnd: [ '$a', { $sqlOr: [ '$b', '$c' ] } ] } } }
     expected:
       - { $match: { $expr: { $sqlAnd: [ '$a', { $or: [ '$b', '$c' ] } ] } } }
-  - name: "desugar complex $sqlOr"
-    skip_reason: "ignore"
+  - name: "OR with complex predicates"
     input:
     - { $match: { $expr: { $sqlOr: [ { $sqlGt: ['$a', 100] }, { $sqlGt: ['$b', 3000] } ] } } }
     expected:
       - { $match: { $expr: { $or: [ { $gt: ['$a', 100] }, { $gt: ['$b', 3000] } ] } } }
-  - name: "desugar nested $sqlOr (a OR (b OR c))"
-    skip_reason: "ignore"
+  - name: "OR nested expression - (a OR (b OR c))"
     input:
       - { $match: { $expr: { $sqlOr: [ '$a', { $sqlOr: [ '$b', '$c' ] } ] } } }
     expected:

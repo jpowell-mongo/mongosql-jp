@@ -24,14 +24,10 @@ impl FilterStageDesugarerVisitor {}
 impl Visitor for FilterStageDesugarerVisitor {
     fn visit_match(&mut self, node: Match) -> Match {
         let node: Match = match node {
-            Match::MatchLanguage(m) => {
-                let or_expression_visitor = &mut OrExpressionsDesugarerVisitor::default();
-                let visited = m.expr.walk(or_expression_visitor);
-                Match::MatchLanguage(MatchLanguage {
-                    source: m.source,
-                    expr: Box::new(visited),
-                })
-            }
+            Match::MatchLanguage(m) => Match::MatchLanguage(MatchLanguage {
+                source: m.source,
+                expr: m.expr,
+            }),
             Match::ExprLanguage(e) => {
                 let or_expression_visitor = &mut OrExpressionsDesugarerVisitor::default();
                 let visited = e.walk(or_expression_visitor);
