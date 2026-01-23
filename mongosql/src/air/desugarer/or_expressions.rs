@@ -9,7 +9,6 @@ use crate::air::{
 
 pub struct OrExpressionsDesugarerPass;
 
-
 /// For Match stages, rewrites any SqlOperator::Or expressions into MqlOperator expressions.
 /// Any Sql Semantic Operators that are descendants of the Or expression will also be translated to MqlOperator expressions.
 ///
