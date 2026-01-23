@@ -46,3 +46,17 @@ tests:
       - { $match: { $expr: { $sqlOr: [ '$a', { $sqlOr: [ '$b', '$c' ] } ] } } }
     expected:
       - { $match: { $expr: { $or: [ '$a', { $or: [ '$b', '$c' ] } ] } } }
+  - name: "nested ORs with complex children"
+    input:
+    - { $match:
+               { $expr:
+                   { $sqlOr:
+                       [
+                         { $sqlOr: [ { $sqlLt: [ "$a", 1 ] }, { $sqlEq: [ "$b", 2 ] } ] } ,
+                         { $sqlGt: [ "$c", 3 ] }
+                       ]
+                   }
+               }
+    }
+    expected:
+      -  { $match: { $expr: { $or: [ { $or: [ { $lt: [ "$a", 1 ] }, { $eq: [ "$b", 2 ] } ] }, { $gt: [ "$c", 3 ] } ] } } }

@@ -73,10 +73,11 @@ impl Visitor for OrExpressionsDesugarerVisitor {
         match node {
             SqlSemanticOperator(s) => match s.op {
                 SqlOperator::Or => {
+                    let old_is_within_or_context = self.is_within_or_context;
                     self.is_within_or_context = true;
                     let desugared_parent = self.desugar_sql_semantic_operator_expression(s);
                     let desugared_tree = desugared_parent.walk(self);
-                    self.is_within_or_context = false;
+                    self.is_within_or_context = old_is_within_or_context;
                     desugared_tree
                 }
                 _ => {
