@@ -60,3 +60,23 @@ tests:
     }
     expected:
       -  { $match: { $expr: { $or: [ { $or: [ { $lt: [ "$a", 1 ] }, { $eq: [ "$b", 2 ] } ] }, { $gt: [ "$c", 3 ] } ] } } }
+  - name: "((a < 1) OR (b = 2)) OR (c > 3))"
+    input:
+      - { $match: { $expr: { $sqlOr: [ { $sqlOr: [ { $sqlLt: [ "$a", 1 ] }, { $sqlEq: [ "$b", 2 ] } ] }, { $sqlGt: [ "$c", 3 ] } ] } } }
+    expected:
+      -  { $match: { $expr: { $or: [ { $or: [ { $lt: [ "$a", 1 ] }, { $eq: [ "$b", 2 ] } ] }, { $gt: [ "$c", 3 ] } ] } } }
+  - name: "OR in match stage within subquery in non-match stage is rewritten"
+    input:
+      - { $project: { x: { $subquery: { collection: "foo", outputPath: ["p"], pipeline: [{ $match: { $expr: { $sqlOr: ["$a", "$b"] } } }] } } } }
+    expected:
+      - { $project: { x: { $subquery: { collection: "foo", outputPath: ["p"], pipeline: [{ $match: { $expr: { $or: ["$a", "$b"] } } }] } } } }
+  - name: "Deeply nested SQL descendants are all rewritten"
+    input:
+      - { $match: { $expr: { $sqlOr: [{ $sqlAnd: [{ $sqlLte: ["$a", 1] }, { $sqlEq: ["$b", 2] }] }, { $sqlAnd: [{ $sqlNe: ["$c", 3] }, { $sqlGte: ["$d", 4] }] }] } } }
+    expected:
+      - { $match: { $expr: { $or: [{ $and: [{ $lte: ["$a", 1] }, { $eq: ["$b", 2] }] }, { $and: [{ $ne: ["$c", 3] }, { $gte: ["$d", 4] }] }] } } }
+  - name: "Complex SQL-semantic child of SQL-semantic OR is rewritten when its sibling is a $subquery expression that uses $sqlAnd inside its expression"
+    input:
+      - { $match: { $expr: { $sqlOr: [ { $subquery: { collection: "foo", outputPath: ["p"], pipeline: [ { $project: { p: { $sqlAnd: [ { $sqlEq: ["$x", 10] }, { $sqlLt: ["$y", 20] } ] } } } ] } }, { $sqlEq: ["$a", 1] } ] } } }
+    expected:
+      - { $match: { $expr: { $or: [ { $subquery: { collection: "foo", outputPath: ["p"], pipeline: [ { $project: { p: { $sqlAnd: [ { $sqlEq: ["$x", 10] }, { $sqlLt: ["$y", 20] } ] } } } ] } }, { $eq: ["$a", 1] } ] } } }
