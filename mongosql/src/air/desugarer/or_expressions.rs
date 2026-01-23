@@ -19,17 +19,17 @@ the SqlOperator::Or expressions (and its children) into MqlOperator expressions.
 */
 impl Pass for OrExpressionsDesugarerPass {
     fn apply(&self, pipeline: Stage) -> air::desugarer::Result<Stage> {
-        let visitor = &mut FilterStageDesugarerVisitor {};
+        let visitor = &mut MatchStageDesugarerVisitor {};
         let stage = pipeline.walk(visitor);
         Ok(stage)
     }
 }
 
 #[derive(Default)]
-struct FilterStageDesugarerVisitor {}
+struct MatchStageDesugarerVisitor {}
 
-impl FilterStageDesugarerVisitor {}
-impl Visitor for FilterStageDesugarerVisitor {
+impl MatchStageDesugarerVisitor {}
+impl Visitor for MatchStageDesugarerVisitor {
     fn visit_match(&mut self, node: Match) -> Match {
         let node: Match = match node {
             Match::MatchLanguage(m) => Match::MatchLanguage(MatchLanguage {
@@ -84,22 +84,6 @@ impl Visitor for OrExpressionsDesugarerVisitor {
                     desugared_parent.walk(self)
                 }
             },
-            //    Subquery, SubqueryComparison, and SubqueryExists have their own scopes,
-            //    so we reset is_within_or_context to false when we see them.
-            //    We also call their walk method with a new FilterStageDesugarerVisitor, so their trees are explored in a "fresh" scope.
-            Subquery(s) => {
-                self.is_within_or_context = false;
-                Subquery(s).walk(&mut FilterStageDesugarerVisitor::default())
-            }
-            SubqueryComparison(s) => {
-                self.is_within_or_context = false;
-                SubqueryComparison(s).walk(&mut FilterStageDesugarerVisitor::default())
-            }
-            SubqueryExists(s) => {
-                self.is_within_or_context = false;
-                SubqueryExists(s).walk(&mut FilterStageDesugarerVisitor::default())
-            }
-
             _ => node,
         }
     }
