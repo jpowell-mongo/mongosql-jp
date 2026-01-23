@@ -361,6 +361,7 @@ impl MqlCodeGenerator {
         join_doc.insert("joinType", join_type);
 
         if air_join.let_vars.is_some() {
+            #[allow(clippy::unnecessary_unwrap)]
             join_doc.insert(
                 "let",
                 air_join
@@ -373,6 +374,7 @@ impl MqlCodeGenerator {
         }
 
         join_doc.insert("pipeline", right_translation.pipeline);
+        #[allow(clippy::unnecessary_unwrap)]
         if air_join.condition.is_some() {
             let cond = self.codegen_expression(air_join.condition.unwrap())?;
             join_doc.insert("condition", cond);

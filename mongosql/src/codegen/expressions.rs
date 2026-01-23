@@ -275,6 +275,7 @@ impl MqlCodeGenerator {
             "input": self.codegen_expression(*like.expr)?,
             "pattern": self.codegen_expression(*like.pattern)?,
         };
+        #[allow(clippy::unnecessary_unwrap)]
         if like.escape.is_some() {
             like_doc.insert("escape", like.escape.unwrap().to_string());
         }

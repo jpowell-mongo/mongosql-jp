@@ -15,6 +15,7 @@ impl Pass for AggregateRewritePass {
         // and return the error if one is found.
         let mut visitor = AggregateUsageCheckVisitor::default();
         let query = visitor.visit_query(query);
+        #[allow(clippy::unnecessary_unwrap)]
         if visitor.error.is_some() {
             return Err(visitor.error.unwrap());
         }
