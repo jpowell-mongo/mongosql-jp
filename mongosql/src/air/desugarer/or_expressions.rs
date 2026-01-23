@@ -86,7 +86,7 @@ impl Visitor for OrExpressionsDesugarerVisitor {
             },
             //    Subquery, SubqueryComparison, and SubqueryExists have their own scopes,
             //    so we reset is_within_or_context to false when we see them.
-            //    [TODO] Get more specific about why you do this - Also walk in the context of a FilterStageVisitor
+            //    We also call their walk method with a new FilterStageDesugarerVisitor, so their trees are explored in a "fresh" scope.
             Subquery(s) => {
                 self.is_within_or_context = false;
                 Subquery(s).walk(&mut FilterStageDesugarerVisitor::default())
