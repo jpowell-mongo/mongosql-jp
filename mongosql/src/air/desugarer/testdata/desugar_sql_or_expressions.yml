@@ -31,11 +31,11 @@ tests:
     expected:
       - { $project: { _id: 0, expr: { $sqlOr: [ '$a', '$b' ] } } }
 
-  - name: "a AND (b OR C)"
+  - name: "(a = 1) AND (b OR C)"
     input:
-      - { $match: { $expr: { $sqlAnd: [ '$a', { $sqlOr: [ '$b', '$c' ] } ] } } }
+      - { $match: { $expr: { $sqlAnd: [  { $sqlEq: [ "$a", 1 ] }, { $sqlOr: [ '$b', '$c' ] } ] } } }
     expected:
-      - { $match: { $expr: { $sqlAnd: [ '$a', { $or: [ '$b', '$c' ] } ] } } }
+      - { $match: { $expr: { $sqlAnd: [  { $sqlEq: [ "$a", 1 ] }, { $or: [ '$b', '$c' ] } ] } } }
   - name: "OR with complex predicates"
     input:
     - { $match: { $expr: { $sqlOr: [ { $sqlGt: ['$a', 100] }, { $sqlGt: ['$b', 3000] } ] } } }
