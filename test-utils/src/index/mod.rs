@@ -194,6 +194,7 @@ pub(crate) fn deserialize_explain_result(d: Document) -> Result<ExplainResult, E
 
 impl ExplainResult {
     #[allow(clippy::result_large_err)]
+    #[allow(clippy::unnecessary_unwrap)]
     pub fn get_query_planner(&self) -> Result<QueryPlanner, Error> {
         match self.query_planner.clone() {
             Some(query_planner) => Ok(query_planner),
