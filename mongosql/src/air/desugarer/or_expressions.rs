@@ -9,14 +9,13 @@ use crate::air::{
 
 pub struct OrExpressionsDesugarerPass;
 
-/**
-For Filter stages, translates any SqlOperator::Or expressions into MqlOperator expressions.
-Any Sql Semantic Operators that are children of the Or expression will also be translated to MqlOperator expressions.
 
-The FilterStageDesugarerVisitor is responsible for "finding" all the Filter Stages.
-Then, the OrExpressionsDesugarerVisitor is responsible for walking the Filter Stage and translating
-the SqlOperator::Or expressions (and its children) into MqlOperator expressions.
-*/
+/// For Match stages, rewrites any SqlOperator::Or expressions into MqlOperator expressions.
+/// Any Sql Semantic Operators that are descendants of the Or expression will also be translated to MqlOperator expressions.
+///
+/// The MatchStageDesugarerVisitor is responsible for "finding" all the Match Stages.
+/// Then, the OrExpressionsDesugarerVisitor is responsible for walking the Match condition and rewriting
+/// the SqlOperator::Or expressions (and its descendants) into MqlOperator expressions.
 impl Pass for OrExpressionsDesugarerPass {
     fn apply(&self, pipeline: Stage) -> air::desugarer::Result<Stage> {
         let visitor = &mut MatchStageDesugarerVisitor {};
