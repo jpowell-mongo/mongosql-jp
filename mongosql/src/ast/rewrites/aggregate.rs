@@ -10,6 +10,7 @@ use linked_hash_map::LinkedHashMap;
 pub struct AggregateRewritePass;
 
 impl Pass for AggregateRewritePass {
+    #[allow(clippy::unnecessary_unwrap)]
     fn apply(&self, query: ast::Query) -> Result<ast::Query> {
         // First, check for improper usage of aggregation functions
         // and return the error if one is found.

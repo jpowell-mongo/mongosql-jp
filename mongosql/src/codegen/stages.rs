@@ -340,6 +340,7 @@ impl MqlCodeGenerator {
         })
     }
 
+    #[allow(clippy::unnecessary_unwrap)]
     fn codegen_join(&self, air_join: air::Join) -> Result<MqlTranslation> {
         let mut left_translation = self.codegen_stage(*air_join.left)?;
         let right_translation = self.codegen_stage(*air_join.right)?;

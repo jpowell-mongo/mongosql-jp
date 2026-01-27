@@ -270,6 +270,7 @@ impl MqlCodeGenerator {
         })
     }
 
+    #[allow(clippy::unnecessary_unwrap)]
     fn codegen_like(&self, like: air::Like) -> Result<Bson> {
         let mut like_doc = doc! {
             "input": self.codegen_expression(*like.expr)?,
