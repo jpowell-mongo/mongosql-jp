@@ -46,7 +46,6 @@ pub struct OdbcCommand {
     capacity: usize,
 }
 
-
 /// This is the JDBC entry point for the library.
 ///
 /// # Parameters
