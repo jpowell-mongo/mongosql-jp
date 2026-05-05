@@ -1718,7 +1718,6 @@ impl<'a> Algebrizer<'a> {
 
             Comparison(_) => self.algebrize_binary_comparison_operands(*b.left, *b.right)?,
 
-            // In and NotIn should have been rewritten during ast rewriting.
             In | NotIn => (
                 self.algebrize_expression(*b.left, false)?,
                 self.algebrize_expression(*b.right, false)?,
