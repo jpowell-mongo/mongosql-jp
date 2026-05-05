@@ -90,7 +90,7 @@ impl MqlCodeGenerator {
                     .collect::<Result<Vec<_>>>()?;
                 bson::bson!({ "$in": Bson::Array(ops) })
             }
-            // $nin is match-language-only and rejected in $project expressions; use $not/$in.
+            // $nin is match-language-only and rejected in $project expressions; use $not { $in }.
             SqlOperator::NotIn => {
                 let ops = sql_op
                     .args

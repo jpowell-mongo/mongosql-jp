@@ -39,14 +39,14 @@ impl MqlTranslator {
             None => return Err(Error::InvalidMatchLanguageInputRef),
             Some(fp) => match self.translate_field_path(fp)? {
                 None => return Err(Error::InvalidMatchLanguageInputRef),
-                Some(field_ref) => air::Expression::FieldRef(field_ref),
+                Some(field_ref) => field_ref,
             },
         };
 
         let array_expression = in_op
             .values
             .into_iter()
-            .map(|v| air::Expression::Literal(self.translate_literal_value(v)))
+            .map(|v| self.translate_literal_value(v))
             .collect();
 
         Ok(air::MatchQuery::In(air::MatchLanguageIn {

@@ -525,7 +525,8 @@ pub struct UnsetField {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct FieldRef {
+pub struct
+    FieldRef {
     pub parent: Option<Box<FieldRef>>,
     pub name: String,
 }
@@ -778,8 +779,8 @@ pub enum MatchLanguageInOp {
 ///
 pub struct MatchLanguageIn {
     pub op: MatchLanguageInOp,
-    pub expression: Expression,
-    pub array_expression: Vec<Expression>,
+    pub expression: FieldRef,
+    pub array_expression: Vec<LiteralValue>,
 }
 
 } // end of generate_visitors! block

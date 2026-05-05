@@ -39,18 +39,12 @@ impl MqlCodeGenerator {
     }
 
     fn codegen_match_elem_in(&self, args: MatchLanguageIn) -> Result<Bson> {
-        let field = match args.expression {
-            air::Expression::FieldRef(fr) => self.codegen_field_ref_path_only(fr),
-            _ => unreachable!("MatchLanguageIn expression is always a FieldRef"),
-        };
+        let field = self.codegen_field_ref_path_only(args.expression);
 
         let values: Vec<Bson> = args
             .array_expression
             .into_iter()
-            .map(|expr| match expr {
-                air::Expression::Literal(lit) => self.codegen_match_literal_value(lit),
-                _ => unreachable!("MatchLanguageIn array elements are always Literals"),
-            })
+            .map(|lit| self.codegen_match_literal_value(lit))
             .collect();
 
         let op = bson!({ "$in": Bson::Array(values) });
@@ -63,9 +57,6 @@ impl MqlCodeGenerator {
                 }
             })),
         }
-
-        // let op = bson!({ op_name: Bson::Array(values) });
-        // Ok(bson!({ field: op }))
     }
 
     fn codegen_match_logical_operator(

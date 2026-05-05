@@ -220,8 +220,11 @@ mod in_op {
         expected = Ok(bson!({"a": {"$in": [1]}})),
         input = air::MatchQuery::In(air::MatchLanguageIn {
             op: air::MatchLanguageInOp::In,
-            expression: air::Expression::FieldRef("a".to_string().into()),
-            array_expression: vec![air::Expression::Literal(air::LiteralValue::Integer(1))],
+            expression: air::FieldRef {
+                parent: None,
+                name: "a".to_string()
+            },
+            array_expression: vec![air::LiteralValue::Integer(1)],
         })
     );
 
@@ -230,11 +233,14 @@ mod in_op {
         expected = Ok(bson!({"a": {"$in": [1, 2, 3]}})),
         input = air::MatchQuery::In(air::MatchLanguageIn {
             op: air::MatchLanguageInOp::In,
-            expression: air::Expression::FieldRef("a".to_string().into()),
+            expression: air::FieldRef {
+                parent: None,
+                name: "a".to_string()
+            },
             array_expression: vec![
-                air::Expression::Literal(air::LiteralValue::Integer(1)),
-                air::Expression::Literal(air::LiteralValue::Integer(2)),
-                air::Expression::Literal(air::LiteralValue::Integer(3)),
+                air::LiteralValue::Integer(1),
+                air::LiteralValue::Integer(2),
+                air::LiteralValue::Integer(3),
             ],
         })
     );
@@ -246,8 +252,11 @@ mod in_op {
         expected = Ok(bson!({"a": {"$not": {"$in": [1]}}})),
         input = air::MatchQuery::In(air::MatchLanguageIn {
             op: air::MatchLanguageInOp::NotIn,
-            expression: air::Expression::FieldRef("a".to_string().into()),
-            array_expression: vec![air::Expression::Literal(air::LiteralValue::Integer(1))],
+            expression: air::FieldRef {
+                parent: None,
+                name: "a".to_string()
+            },
+            array_expression: vec![air::LiteralValue::Integer(1)],
         })
     );
 
@@ -256,11 +265,14 @@ mod in_op {
         expected = Ok(bson!({"a": {"$not": {"$in": [1, 2, 3]}}})),
         input = air::MatchQuery::In(air::MatchLanguageIn {
             op: air::MatchLanguageInOp::NotIn,
-            expression: air::Expression::FieldRef("a".to_string().into()),
+            expression: air::FieldRef {
+                parent: None,
+                name: "a".to_string()
+            },
             array_expression: vec![
-                air::Expression::Literal(air::LiteralValue::Integer(1)),
-                air::Expression::Literal(air::LiteralValue::Integer(2)),
-                air::Expression::Literal(air::LiteralValue::Integer(3)),
+                air::LiteralValue::Integer(1),
+                air::LiteralValue::Integer(2),
+                air::LiteralValue::Integer(3),
             ],
         })
     );
