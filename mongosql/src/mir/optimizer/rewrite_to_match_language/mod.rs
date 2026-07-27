@@ -15,7 +15,7 @@
 /// other side is a literal (see `rewrite_comparison`). Most operators are
 /// emitted bare because MQL comparisons are type-bracketed and so already
 /// exclude null and missing; `<>` over a nullable field is wrapped in a
-/// `{field: {$gt: null}}` existence guard, and a `NULL` literal operand is left
+/// `{field: {$ne: null}}` existence guard, and a `NULL` literal operand is left
 /// in `$expr`. See `rewrite_comparison` for details.
 ///
 /// Also note, MatchSplitting should ensure we never have a conjunction at this
@@ -289,8 +289,9 @@ impl MatchLanguageRewriterVisitor {
     ///   every document that is not `10`, *including* those where `field` is
     ///   null or missing. When the field is nullable, `$ne` is therefore wrapped
     ///   in an explicit existence guard:
-    ///   `{$and: [{field: {$gt: null}}, {field: {$ne: 10}}]}`. `{$gt: null}`
-    ///   matches exactly the present, non-null values. A non-nullable field
+    ///   `{$and: [{field: {$ne: null}}, {field: {$ne: 10}}]}`. `{$ne: null}` is
+    ///   the complement of `{$eq: null}` (which matches null *and* missing), so
+    ///   it matches exactly the present, non-null values. A non-nullable field
     ///   needs no guard.
     /// - A `NULL` literal operand cannot be expressed faithfully at all:
     ///   `$eq: null` matches both null and missing, and `$ne: null` matches every

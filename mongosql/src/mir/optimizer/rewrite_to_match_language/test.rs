@@ -669,13 +669,13 @@ fn match_comparison(function: MatchLanguageComparisonOp) -> MatchQuery {
 }
 
 // A `<>` comparison guarded by an existence check:
-// `{$and: [{foo.int: {$gt: null}}, {foo.int: {$ne: 10}}]}`.
+// `{$and: [{foo.int: {$ne: null}}, {foo.int: {$ne: 10}}]}`.
 fn guarded_match_ne() -> MatchQuery {
     MatchQuery::Logical(MatchLanguageLogical {
         op: MatchLanguageLogicalOp::And,
         args: vec![
             MatchQuery::Comparison(MatchLanguageComparison {
-                function: MatchLanguageComparisonOp::Gt,
+                function: MatchLanguageComparisonOp::Ne,
                 input: Some(mir_field_path("foo", vec!["int"])),
                 arg: LiteralValue::Null,
                 cache: SchemaCache::new(),
