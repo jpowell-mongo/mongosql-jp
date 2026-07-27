@@ -12,11 +12,9 @@
 ///
 /// Comparison operators (<, <=, <>, =, >, >=) are also rewritten to native
 /// match language when exactly one side is a plain field reference and the
-/// other side is a literal (see `rewrite_comparison`). Because MQL's native
-/// comparison operators sort null/missing below every other BSON type, a
-/// comparison over a nullable field is guarded with an explicit
-/// `{field: {$gt: null}}` existence check to preserve SQL's three-valued
-/// semantics; see `rewrite_comparison` for details.
+/// other side is a literal (see `rewrite_comparison`). The rewrite is unguarded,
+/// so null/missing handling follows MQL's native type-bracketing rules; see
+/// `rewrite_comparison` for what that means per operator.
 ///
 /// Also note, MatchSplitting should ensure we never have a conjunction at this
 /// point, however we choose to make this optimization work independent of that
@@ -271,28 +269,38 @@ impl MatchLanguageRewriterVisitor {
     /// (e.g. `10 < x`), the operator is commuted so the field ends up on the
     /// "input" side of the comparison (`x > 10`).
     ///
-    /// # Null / missing correctness
+    /// # Null / missing behavior
     ///
-    /// MQL's native comparison operators sort `null` and missing fields below
-    /// every other BSON type, so e.g. `{field: {$lt: 10}}` would match documents
-    /// where `field` is `null` or missing — whereas SQL's three-valued logic
-    /// says `NULL < 10` is `UNKNOWN` and must be excluded. To preserve SQL
-    /// semantics, when the field is possibly null/missing
-    /// (`field_path.is_nullable`) we guard the comparison with an explicit
-    /// existence check, producing `{$and: [{field: {$gt: null}}, {field: {$op: literal}}]}`.
-    /// `{field: {$gt: null}}` is true iff `field` is present and not null,
-    /// exploiting the same BSON sort-order trick used elsewhere in this codebase
-    /// (see `mir::optimizer::match_null_filtering`). No optimizer downstream of
-    /// this rewriter can add this guard: once a `Filter`'s condition becomes a
+    /// The rewrite is unguarded: the emitted `MatchQuery` is a bare comparison
+    /// regardless of whether the field is nullable. How null and missing values
+    /// are treated therefore follows directly from MQL's native operators.
+    ///
+    /// MQL comparisons are *type-bracketed* — they only match values in the same
+    /// BSON type class as their argument — which determines what each operator
+    /// does with a null or missing field:
+    ///
+    /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing.
+    /// - `$eq` against a non-null literal never matches null or missing.
+    /// - `$ne` inverts the bracketing: `{field: {$ne: 10}}` matches every
+    ///   document that is not `10`, *including* those where `field` is null or
+    ///   missing.
+    /// - A `NULL` literal operand is a special case in its own right: `$eq: null`
+    ///   matches both null and missing, while `$ne: null` matches every present
+    ///   non-null value.
+    ///
+    /// Note that this pass is the only place these semantics can be adjusted.
+    /// `MatchNullFilteringOptimizer`, which inserts `{field: {$gt: null}}`
+    /// existence guards elsewhere in the pipeline, both runs *after* this pass
+    /// and only visits `Stage::Filter`; once a `Filter`'s condition has become a
     /// `MatchQuery` there is no longer an `Expression`/`FieldAccess` tree to
     /// inspect, and the translator and codegen are purely syntactic.
     ///
     /// # Returns
     ///
-    /// - `Some(MatchQuery::Comparison { .. })` when the field is non-nullable.
-    /// - `Some(MatchQuery::Logical(And, [null_guard, comparison]))` when the
-    ///   field is nullable.
-    /// - `None` when the expression is not a `<field> <op> <literal>` comparison.
+    /// - `Some(MatchQuery::Comparison { .. })` when the expression is a
+    ///   `<field> <op> <literal>` comparison over a match-addressable field.
+    /// - `None` otherwise — including when the field name is not addressable by
+    ///   native match language — leaving the expression in `$expr`.
     fn rewrite_comparison(sf: &ScalarFunctionApplication) -> Option<MatchQuery> {
         let op = Self::comparison_op(&sf.function)?;
 
@@ -321,18 +329,12 @@ impl MatchLanguageRewriterVisitor {
 
         let op = if needs_commute { Self::commute(op) } else { op };
 
-        let comparison = MatchQuery::Comparison(MatchLanguageComparison {
+        Some(MatchQuery::Comparison(MatchLanguageComparison {
             function: op,
-            input: Some(field_path.clone()),
+            input: Some(field_path),
             arg: literal,
             cache: SchemaCache::new(),
-        });
-
-        if !field_path.is_nullable {
-            return Some(comparison);
-        }
-
-        Some(comparison)
+        }))
     }
 
     // Only rewrite a condition that consists of Is, Like, or a logical operation

@@ -203,8 +203,10 @@ fn generate_match_prefilter(
 }
 
 // Pulls (op, literal) out of a lowered match condition. Handles a bare comparison
-// and the nullable-guarded `And([{field: {$gt: null}}, cmp])` shape emitted by
-// rewrite_to_match_language, skipping the `$gt: null` existence guard.
+// directly; for an `And`, returns the first conjunct that is a comparison against
+// a non-null literal. Comparisons against `null` are skipped because they carry no
+// bound useful for building an ElemMatch prefilter (and an `And` of only those
+// yields `None`, leaving the Unwind un-prefiltered).
 fn extract_comparison(condition: &MatchQuery) -> Option<(MatchLanguageComparisonOp, LiteralValue)> {
     match condition {
         MatchQuery::Comparison(c) => Some((c.function, c.arg.clone())),

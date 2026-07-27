@@ -668,8 +668,8 @@ fn match_comparison(function: MatchLanguageComparisonOp) -> MatchQuery {
     })
 }
 
-// Over a nullable field, every comparison is wrapped in the null guard so that
-// null/missing documents are excluded, matching SQL three-valued semantics.
+// Comparisons are rewritten unguarded whether or not the field is nullable; the
+// resulting null/missing behavior is MQL's own (see `rewrite_comparison`).
 test_rewrite_to_match_language!(
     rewrite_gt_over_nullable_field,
     expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Gt)),
@@ -712,8 +712,8 @@ test_rewrite_to_match_language!(
     input = filter_stage(comparison(ScalarFunction::Neq, true))
 );
 
-// Over a non-nullable field, schema guarantees the value can never be
-// null/missing, so no guard is emitted.
+// The same rewrite applies over a non-nullable field: nullability does not
+// affect the emitted MatchQuery.
 test_rewrite_to_match_language!(
     rewrite_gt_over_non_nullable_field_is_unguarded,
     expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Gt)),
@@ -729,7 +729,7 @@ test_rewrite_to_match_language!(
 );
 
 // Literal on the left commutes the operator so the field ends up on the input
-// side: `10 < foo.int` becomes `foo.int > 10` (guarded because the field is nullable).
+// side: `10 < foo.int` becomes `foo.int > 10`.
 test_rewrite_to_match_language!(
     rewrite_comparison_commutes_literal_on_left,
     expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Gt)),
@@ -743,7 +743,8 @@ test_rewrite_to_match_language!(
     )))
 );
 
-// Conjunction of two comparisons (`x > 10 AND y > 20`), each guarded per-branch.
+// Conjunction of two comparisons (`foo.int > 10 AND foo.int < 10`); each branch
+// is rewritten independently.
 test_rewrite_to_match_language!(
     rewrite_conjunction_of_comparisons,
     expected = match_filter_stage(MatchQuery::Logical(MatchLanguageLogical {
