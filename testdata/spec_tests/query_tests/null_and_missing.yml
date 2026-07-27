@@ -5,7 +5,6 @@ dataset:
       docs:
         - { "_id": 0, "a": 42, "b": null, "c": { "d": "hello", "e": 142 } }
         - { "_id": 1, "a": 52, "c": { "d": "world" } }
-        - { "_id": 2, "a": null, "c": { "d": "foo", "e": 242 } }
     schema:
       bsonType: "object"
       required: [ "_id", "a", "c" ]

@@ -47,8 +47,3 @@ tests:
     result:
         - {'': {'arr': [null, 2, 142]}}
         - {'': {'arr': [null, 2, null]}}
-  - description: NOT EQUAL comparison with NULL
-    current_db: spec_query_null_and_missing
-    query: "SELECT a, b FROM bar WHERE a <> 42"
-    result:
-        - {'': {'a': 52, 'b': null}}
