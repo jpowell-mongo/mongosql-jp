@@ -341,3 +341,97 @@ test_prefilter_no_op! {
         cache: SchemaCache::new(),
     }),
 }
+
+// The tests below drive the optimizer with a MatchFilter (native match language) as
+// input rather than a Filter ($expr). These exercise the MqlStage::MatchFilter arm of
+// visit_stage and its helpers generate_match_prefilter / extract_comparison.
+
+// Prefiltering only applies directly above an Unwind. A MatchFilter over any other
+// source is rebuilt unchanged.
+test_prefilter_no_op! {
+    match_filter_over_non_unwind_source_is_noop,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Sentinel.into(),
+        condition: MatchQuery::Comparison(MatchLanguageComparison {
+            function: MatchLanguageComparisonOp::Eq,
+            input: Some(mir_field_path("foo", vec!["bar"])),
+            arg: Integer(42),
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}
+
+// An ElemMatch prefilter is built for exactly one field, so a condition that references
+// two distinct paths cannot be prefiltered. `foo.bar` alone would be prefilterable; the
+// second path is what makes this a no-op.
+test_prefilter_no_op! {
+    match_filter_multiple_field_uses_is_noop,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Unwind(Unwind {
+            source: Stage::Sentinel.into(),
+            path: mir_field_path("foo", vec!["bar"]),
+            index: Some("idx".to_string()),
+            outer: false,
+            cache: SchemaCache::new(),
+            is_prefiltered: false,
+        }).into(),
+        condition: MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::And,
+            args: vec![
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["bar"])),
+                    arg: Integer(42),
+                    cache: SchemaCache::new(),
+                }),
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["baz"])),
+                    arg: Integer(43),
+                    cache: SchemaCache::new(),
+                }),
+            ],
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}
+
+// extract_comparison only understands a bare comparison or an And of them; a disjunction
+// yields no single bound to prefilter on, so the Unwind is left alone. Note both branches
+// use the same path (`foo.bar`), so field_uses has length 1 and the condition clears the
+// single-field-use and opaque_field_defines guards -- this really does reach
+// extract_comparison rather than short-circuiting earlier.
+test_prefilter_no_op! {
+    match_filter_or_condition_is_noop,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Unwind(Unwind {
+            source: Stage::Sentinel.into(),
+            path: mir_field_path("foo", vec!["bar"]),
+            index: Some("idx".to_string()),
+            outer: false,
+            cache: SchemaCache::new(),
+            is_prefiltered: false,
+        }).into(),
+        condition: MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::Or,
+            args: vec![
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["bar"])),
+                    arg: Integer(42),
+                    cache: SchemaCache::new(),
+                }),
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["bar"])),
+                    arg: Integer(43),
+                    cache: SchemaCache::new(),
+                }),
+            ],
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}
