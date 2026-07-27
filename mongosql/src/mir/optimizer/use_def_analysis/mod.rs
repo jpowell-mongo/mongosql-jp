@@ -447,67 +447,65 @@ impl Visitor for SubstituteVisitor {
             }
             return node;
         };
-        {
-            if self.failed {
-                return node;
+        if self.failed {
+            return node;
+        }
+        let mut cur = rep;
+        // traverse through the fields to get to the proper place in the Document
+        // that is replacing the Key in this substitution
+        let mut field_idx = 0;
+        loop {
+            if node.fields.is_empty() {
+                break;
             }
-            let mut cur = rep;
-            // traverse through the fields to get to the proper place in the Document
-            // that is replacing the Key in this substitution
-            let mut field_idx = 0;
-            loop {
-                if node.fields.is_empty() {
-                    break;
-                }
-                let field = node.fields.get(field_idx);
-                match cur {
-                    // Each level of the Key substitution must be a Document, FieldAccess, or
-                    // Reference.
-                    Expression::Document(d) => {
-                        if let Some(next) = d.document.get(field.unwrap()) {
-                            cur = next;
-                            // since this was a Document, we need to remove addvance the field_idx
-                            // so that we can get the next field and so that this current field
-                            // will be omitted from the output, assuming this substitution
-                            // ultimately succeeds.
-                            field_idx += 1;
-                        } else {
-                            self.failed = true;
-                            return node;
-                        }
-                    }
-                    // If we hit a FieldAccess or Reference we end iteration and keep the remaining fields.
-                    // The remaining node.fields will be concatenated with the fields from this
-                    // FieldAccess, assuming it can be converted to a FieldPath, or the node.key will
-                    // just be replaced, if this is a Reference.
-                    Expression::FieldAccess(_) | Expression::Reference(_) => {
-                        break;
-                    }
-                    _ => {
+            let field = node.fields.get(field_idx);
+            match cur {
+                // Each level of the Key substitution must be a Document, FieldAccess, or
+                // Reference.
+                Expression::Document(d) => {
+                    if let Some(next) = d.document.get(field.unwrap()) {
+                        cur = next;
+                        // since this was a Document, we need to remove addvance the field_idx
+                        // so that we can get the next field and so that this current field
+                        // will be omitted from the output, assuming this substitution
+                        // ultimately succeeds.
+                        field_idx += 1;
+                    } else {
                         self.failed = true;
                         return node;
                     }
                 }
-            }
-            // If we are subbing in a Reference, we simply replace the FieldPath key with the Reference key.
-            if let Expression::Reference(r) = cur {
-                node.key = r.key.clone();
-                node.fields = node.fields.into_iter().skip(field_idx).collect();
-                return node;
-            }
-            // If we are subbing in a FieldAccess, it must be convertable to a FieldPath
-            // or this substitution has failed.
-            if let Expression::FieldAccess(fa) = cur {
-                let fp: Result<FieldPath, _> = fa.try_into();
-                if let Ok(fp) = fp {
-                    node.key = fp.key;
-                    node.fields = fp
-                        .fields
-                        .into_iter()
-                        .chain(node.fields.into_iter().skip(field_idx))
-                        .collect();
+                // If we hit a FieldAccess or Reference we end iteration and keep the remaining fields.
+                // The remaining node.fields will be concatenated with the fields from this
+                // FieldAccess, assuming it can be converted to a FieldPath, or the node.key will
+                // just be replaced, if this is a Reference.
+                Expression::FieldAccess(_) | Expression::Reference(_) => {
+                    break;
+                }
+                _ => {
+                    self.failed = true;
                     return node;
                 }
+            }
+        }
+        // If we are subbing in a Reference, we simply replace the FieldPath key with the Reference key.
+        if let Expression::Reference(r) = cur {
+            node.key = r.key.clone();
+            node.fields = node.fields.into_iter().skip(field_idx).collect();
+            return node;
+        }
+        // If we are subbing in a FieldAccess, it must be convertable to a FieldPath
+        // or this substitution has failed.
+        if let Expression::FieldAccess(fa) = cur {
+            let fp: Result<FieldPath, _> = fa.try_into();
+            if let Ok(fp) = fp {
+                node.key = fp.key;
+                node.fields = fp
+                    .fields
+                    .into_iter()
+                    .chain(node.fields.into_iter().skip(field_idx))
+                    .collect();
+                return node;
             }
         }
         self.failed = true;

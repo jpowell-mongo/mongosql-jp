@@ -626,7 +626,10 @@ impl StageMovementVisitor<'_> {
                 // MatchFilter above the join, where every datasource is a plain field reference. A
                 // regular $expr Filter is unaffected: correlated variables are valid in $expr.
                 if matches!(node, Stage::MqlIntrinsic(MqlStage::MatchFilter(_))) {
-                    let left_schema = n.source.schema(self.schema_state).unwrap();
+                    let left_schema = n
+                        .source
+                        .schema(self.schema_state)
+                        .expect("LateralJoin LHS schema must be inferable");
                     let uses_left = datasource_uses
                         .iter()
                         .any(|u| left_schema.has_datasource(u));
