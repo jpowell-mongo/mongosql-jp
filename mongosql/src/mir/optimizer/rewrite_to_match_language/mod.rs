@@ -12,9 +12,11 @@
 ///
 /// Comparison operators (<, <=, <>, =, >, >=) are also rewritten to native
 /// match language when exactly one side is a plain field reference and the
-/// other side is a literal (see `rewrite_comparison`). The rewrite is unguarded,
-/// so null/missing handling follows MQL's native type-bracketing rules; see
-/// `rewrite_comparison` for what that means per operator.
+/// other side is a literal (see `rewrite_comparison`). Most operators are
+/// emitted bare because MQL comparisons are type-bracketed and so already
+/// exclude null and missing; `<>` over a nullable field is wrapped in a
+/// `{field: {$gt: null}}` existence guard, and a `NULL` literal operand is left
+/// in `$expr`. See `rewrite_comparison` for details.
 ///
 /// Also note, MatchSplitting should ensure we never have a conjunction at this
 /// point, however we choose to make this optimization work independent of that
@@ -271,22 +273,33 @@ impl MatchLanguageRewriterVisitor {
     ///
     /// # Null / missing behavior
     ///
-    /// The rewrite is unguarded: the emitted `MatchQuery` is a bare comparison
-    /// regardless of whether the field is nullable. How null and missing values
-    /// are treated therefore follows directly from MQL's native operators.
+    /// SQL three-valued logic makes a comparison against null or missing
+    /// UNKNOWN, and a `WHERE` clause keeps only rows that evaluate to TRUE, so
+    /// null and missing fields must never satisfy a comparison.
     ///
     /// MQL comparisons are *type-bracketed* — they only match values in the same
-    /// BSON type class as their argument — which determines what each operator
-    /// does with a null or missing field:
+    /// BSON type class as their argument — which gives that behavior for free
+    /// for most operators:
     ///
-    /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing.
-    /// - `$eq` against a non-null literal never matches null or missing.
-    /// - `$ne` inverts the bracketing: `{field: {$ne: 10}}` matches every
-    ///   document that is not `10`, *including* those where `field` is null or
-    ///   missing.
-    /// - A `NULL` literal operand is a special case in its own right: `$eq: null`
-    ///   matches both null and missing, while `$ne: null` matches every present
-    ///   non-null value.
+    /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing, so they are
+    ///   emitted as bare comparisons.
+    /// - `$eq` against a non-null literal never matches null or missing, so it
+    ///   is emitted as a bare comparison.
+    /// - `$ne` inverts the bracketing: `{field: {$ne: 10}}` on its own matches
+    ///   every document that is not `10`, *including* those where `field` is
+    ///   null or missing. When the field is nullable, `$ne` is therefore wrapped
+    ///   in an explicit existence guard:
+    ///   `{$and: [{field: {$gt: null}}, {field: {$ne: 10}}]}`. `{$gt: null}`
+    ///   matches exactly the present, non-null values. A non-nullable field
+    ///   needs no guard.
+    /// - A `NULL` literal operand cannot be expressed faithfully at all:
+    ///   `$eq: null` matches both null and missing, and `$ne: null` matches every
+    ///   present non-null value, whereas SQL says both are UNKNOWN for every row.
+    ///   Such comparisons return `None` and stay in `$expr`, where the existing
+    ///   desugaring handles them.
+    ///
+    /// The guard is applied to the *post-commute* operator, so `10 <> a` is
+    /// covered as well as `a <> 10`.
     ///
     /// Note that this pass is the only place these semantics can be adjusted.
     /// `MatchNullFilteringOptimizer`, which inserts `{field: {$gt: null}}`
@@ -298,9 +311,13 @@ impl MatchLanguageRewriterVisitor {
     /// # Returns
     ///
     /// - `Some(MatchQuery::Comparison { .. })` when the expression is a
-    ///   `<field> <op> <literal>` comparison over a match-addressable field.
+    ///   `<field> <op> <literal>` comparison over a match-addressable field and
+    ///   MQL's native semantics already match SQL's.
+    /// - `Some(MatchQuery::Logical(And, [null_guard, comparison]))` for `<>` over
+    ///   a nullable field.
     /// - `None` otherwise — including when the field name is not addressable by
-    ///   native match language — leaving the expression in `$expr`.
+    ///   native match language, or the literal is `NULL` — leaving the expression
+    ///   in `$expr`.
     fn rewrite_comparison(sf: &ScalarFunctionApplication) -> Option<MatchQuery> {
         let op = Self::comparison_op(&sf.function)?;
 
@@ -327,12 +344,46 @@ impl MatchLanguageRewriterVisitor {
             return None;
         }
 
+        // MQL cannot express a SQL comparison against NULL: `$eq: null` matches
+        // null and missing, `$ne: null` matches every present non-null value,
+        // while SQL evaluates both to UNKNOWN for every row. Leave it in $expr.
+        if matches!(literal, LiteralValue::Null) {
+            return None;
+        }
+
         let op = if needs_commute { Self::commute(op) } else { op };
 
-        Some(MatchQuery::Comparison(MatchLanguageComparison {
+        let comparison = MatchQuery::Comparison(MatchLanguageComparison {
             function: op,
-            input: Some(field_path),
+            input: Some(field_path.clone()),
             arg: literal,
+            cache: SchemaCache::new(),
+        });
+
+        // Every operator but `$ne` is type-bracketed and so already excludes
+        // null and missing; `$ne` over a nullable field needs an explicit
+        // existence guard to match SQL's three-valued logic.
+        if op != MatchLanguageComparisonOp::Ne || !field_path.is_nullable {
+            return Some(comparison);
+        }
+
+        // `{field: {$ne: null}}` is the existence guard in match language: it is
+        // the complement of `{$eq: null}`, which matches null and missing, so it
+        // matches exactly the present, non-null values. Note `{$gt: null}` does
+        // *not* work here — match language comparisons are type-bracketed, so
+        // `$gt: null` brackets to the null type class and matches nothing. (The
+        // `$gt: null` idiom used elsewhere in the pipeline is an `$expr`
+        // construct, where comparisons use total BSON ordering instead.)
+        let null_guard = MatchQuery::Comparison(MatchLanguageComparison {
+            function: MatchLanguageComparisonOp::Ne,
+            input: Some(field_path),
+            arg: LiteralValue::Null,
+            cache: SchemaCache::new(),
+        });
+
+        Some(MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::And,
+            args: vec![null_guard, comparison],
             cache: SchemaCache::new(),
         }))
     }

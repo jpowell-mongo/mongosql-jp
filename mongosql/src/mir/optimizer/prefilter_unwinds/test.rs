@@ -342,10 +342,6 @@ test_prefilter_no_op! {
     }),
 }
 
-// The tests below drive the optimizer with a MatchFilter (native match language) as
-// input rather than a Filter ($expr). These exercise the MqlStage::MatchFilter arm of
-// visit_stage and its helpers generate_match_prefilter / extract_comparison.
-
 // Prefiltering only applies directly above an Unwind. A MatchFilter over any other
 // source is rebuilt unchanged.
 test_prefilter_no_op! {
@@ -398,11 +394,6 @@ test_prefilter_no_op! {
     }))),
 }
 
-// extract_comparison only understands a bare comparison or an And of them; a disjunction
-// yields no single bound to prefilter on, so the Unwind is left alone. Note both branches
-// use the same path (`foo.bar`), so field_uses has length 1 and the condition clears the
-// single-field-use and opaque_field_defines guards -- this really does reach
-// extract_comparison rather than short-circuiting earlier.
 test_prefilter_no_op! {
     match_filter_or_condition_is_noop,
     Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {

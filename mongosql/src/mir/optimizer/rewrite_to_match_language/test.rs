@@ -668,8 +668,26 @@ fn match_comparison(function: MatchLanguageComparisonOp) -> MatchQuery {
     })
 }
 
-// Comparisons are rewritten unguarded whether or not the field is nullable; the
-// resulting null/missing behavior is MQL's own (see `rewrite_comparison`).
+// A `<>` comparison guarded by an existence check:
+// `{$and: [{foo.int: {$gt: null}}, {foo.int: {$ne: 10}}]}`.
+fn guarded_match_ne() -> MatchQuery {
+    MatchQuery::Logical(MatchLanguageLogical {
+        op: MatchLanguageLogicalOp::And,
+        args: vec![
+            MatchQuery::Comparison(MatchLanguageComparison {
+                function: MatchLanguageComparisonOp::Gt,
+                input: Some(mir_field_path("foo", vec!["int"])),
+                arg: LiteralValue::Null,
+                cache: SchemaCache::new(),
+            }),
+            match_comparison(MatchLanguageComparisonOp::Ne),
+        ],
+        cache: SchemaCache::new(),
+    })
+}
+
+// The ordering operators and `$eq` are type-bracketed in MQL, so they already
+// exclude null and missing and are emitted unguarded even over a nullable field.
 test_rewrite_to_match_language!(
     rewrite_gt_over_nullable_field,
     expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Gt)),
@@ -705,15 +723,65 @@ test_rewrite_to_match_language!(
     input = filter_stage(comparison(ScalarFunction::Lte, true))
 );
 
+// `$ne` inverts the type bracketing and would otherwise match null and missing,
+// so over a nullable field it is wrapped in a `{$gt: null}` existence guard.
 test_rewrite_to_match_language!(
-    rewrite_neq_over_nullable_field,
-    expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Ne)),
+    rewrite_neq_over_nullable_field_is_guarded,
+    expected = match_filter_stage(guarded_match_ne()),
     expected_changed = true,
     input = filter_stage(comparison(ScalarFunction::Neq, true))
 );
 
-// The same rewrite applies over a non-nullable field: nullability does not
-// affect the emitted MatchQuery.
+// A non-nullable field cannot be null or missing, so no guard is needed.
+test_rewrite_to_match_language!(
+    rewrite_neq_over_non_nullable_field_is_unguarded,
+    expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Ne)),
+    expected_changed = true,
+    input = filter_stage(comparison(ScalarFunction::Neq, false))
+);
+
+// The guard is applied to the post-commute operator, so `10 <> foo.int` is
+// guarded just like `foo.int <> 10`.
+test_rewrite_to_match_language!(
+    rewrite_neq_with_literal_on_left_is_guarded,
+    expected = match_filter_stage(guarded_match_ne()),
+    expected_changed = true,
+    input = filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Neq,
+        vec![
+            Expression::Literal(LiteralValue::Integer(10)),
+            *mir_field_access("foo", "int", true),
+        ],
+    )))
+);
+
+// A NULL literal operand has no faithful match language equivalent — `$eq: null`
+// matches null and missing, `$ne: null` matches every present non-null value,
+// while SQL evaluates both to UNKNOWN — so these stay in $expr.
+test_rewrite_to_match_language_no_op!(
+    cannot_rewrite_eq_against_null_literal,
+    filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Eq,
+        vec![
+            *mir_field_access("foo", "int", true),
+            Expression::Literal(LiteralValue::Null),
+        ],
+    )))
+);
+
+test_rewrite_to_match_language_no_op!(
+    cannot_rewrite_neq_against_null_literal,
+    filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Neq,
+        vec![
+            *mir_field_access("foo", "int", true),
+            Expression::Literal(LiteralValue::Null),
+        ],
+    )))
+);
+
+// The same rewrite applies over a non-nullable field: for these operators
+// nullability does not affect the emitted MatchQuery.
 test_rewrite_to_match_language!(
     rewrite_gt_over_non_nullable_field_is_unguarded,
     expected = match_filter_stage(match_comparison(MatchLanguageComparisonOp::Gt)),
