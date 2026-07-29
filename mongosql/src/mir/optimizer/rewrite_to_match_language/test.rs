@@ -781,6 +781,50 @@ test_rewrite_to_match_language_no_op!(
     )))
 );
 
+test_rewrite_to_match_language_no_op!(
+    cannot_rewrite_gte_against_null_literal,
+    filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Gte,
+        vec![
+            *mir_field_access("foo", "int", true),
+            Expression::Literal(LiteralValue::Null),
+        ],
+    )))
+);
+
+test_rewrite_to_match_language_no_op!(
+    cannot_rewrite_lte_against_null_literal,
+    filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Lte,
+        vec![
+            *mir_field_access("foo", "int", true),
+            Expression::Literal(LiteralValue::Null),
+        ],
+    )))
+);
+
+test_rewrite_to_match_language_no_op!(
+    cannot_rewrite_lt_against_null_literal,
+    filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Lt,
+        vec![
+            *mir_field_access("foo", "int", true),
+            Expression::Literal(LiteralValue::Null),
+        ],
+    )))
+);
+
+test_rewrite_to_match_language_no_op!(
+    cannot_rewrite_gt_against_null_literal,
+    filter_stage(Expression::ScalarFunction(ScalarFunctionApplication::new(
+        ScalarFunction::Gt,
+        vec![
+            *mir_field_access("foo", "int", true),
+            Expression::Literal(LiteralValue::Null),
+        ],
+    )))
+);
+
 // The same rewrite applies over a non-nullable field: for these operators
 // nullability does not affect the emitted MatchQuery.
 test_rewrite_to_match_language!(
