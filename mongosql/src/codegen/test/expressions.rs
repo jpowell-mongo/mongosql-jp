@@ -1021,7 +1021,9 @@ mod mql_semantic_operator {
 
     test_codegen_expression!(
         not_in_op,
-        expected = Ok(bson!({ "$nin": [{ "$literal": 1}, [{ "$literal": 1 }, { "$literal": 2 }]]})),
+        expected = Ok(
+            bson!({ "$not": [{ "$in": [{ "$literal": 1}, [{ "$literal": 1 }, { "$literal": 2 }]]}]})
+        ),
         input = MqlSemanticOperator(MqlSemanticOperator {
             op: NotIn,
             args: vec![
@@ -2025,6 +2027,35 @@ mod map {
             bson!({ "$map": {"input": {"$literal": "input"}, "in": {"$literal": "inside"}, "as": "x"}})
         ),
         input = Map(Map {
+            input: Box::new(Literal(LiteralValue::String("input".to_string()))),
+            as_name: Some("x".to_string()),
+            inside: Box::new(Literal(LiteralValue::String("inside".to_string()))),
+        })
+    );
+}
+
+mod filter {
+    use crate::air::{Expression::*, Filter, LiteralValue};
+    use bson::bson;
+
+    test_codegen_expression!(
+        without_as,
+        expected = Ok(
+            bson!({ "$filter": {"input": {"$literal": "input"}, "cond": {"$literal": "inside"}}})
+        ),
+        input = Filter(Filter {
+            input: Box::new(Literal(LiteralValue::String("input".to_string()))),
+            as_name: None,
+            inside: Box::new(Literal(LiteralValue::String("inside".to_string()))),
+        })
+    );
+
+    test_codegen_expression!(
+        with_as,
+        expected = Ok(
+            bson!({ "$filter": {"input": {"$literal": "input"}, "cond": {"$literal": "inside"}, "as": "x"}})
+        ),
+        input = Filter(Filter {
             input: Box::new(Literal(LiteralValue::String("input".to_string()))),
             as_name: Some("x".to_string()),
             inside: Box::new(Literal(LiteralValue::String("inside".to_string()))),

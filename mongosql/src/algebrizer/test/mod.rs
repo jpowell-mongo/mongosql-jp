@@ -14,12 +14,12 @@ use mongosql_datastructures::binding_tuple::Key;
 
 #[macro_export]
 macro_rules! test_algebrize {
-    ($func_name:ident, method = $method:ident, $(in_implicit_type_conversion_context = $in_implicit_type_conversion_context:expr,)? $(expected = $expected:expr,)? $(expected_pat = $expected_pat:pat,)? $(expected_error_code = $expected_error_code:literal,)? input = $ast:expr, $(source = $source:expr,)? $(env = $env:expr,)? $(catalog = $catalog:expr,)? $(schema_checking_mode = $schema_checking_mode:expr,)? $(is_add_fields = $is_add_fields:expr, )?) => {
+    ($func_name:ident, method = $method:ident, $(expression_context = $expression_context:expr,)? $(expected = $expected:expr,)? $(expected_pat = $expected_pat:pat,)? $(expected_error_code = $expected_error_code:literal,)? input = $ast:expr, $(source = $source:expr,)? $(env = $env:expr,)? $(catalog = $catalog:expr,)? $(schema_checking_mode = $schema_checking_mode:expr,)? $(is_add_fields = $is_add_fields:expr, )?) => {
         #[test]
         fn $func_name() {
             #[allow(unused_imports)]
             use $crate::{
-                algebrizer::{Algebrizer, Error, ClauseType},
+                algebrizer::{Algebrizer, ExpressionContext, Error, ClauseType},
                 catalog::Catalog,
                 SchemaCheckingMode,
             };
@@ -34,9 +34,10 @@ macro_rules! test_algebrize {
 
             #[allow(unused_mut, unused_assignments)]
             let mut algebrizer = Algebrizer::new("test".into(), &catalog, 0u16, schema_checking_mode, false, ClauseType::Unintialized);
-            $(algebrizer = Algebrizer::with_schema_env("test".into(), $env, &catalog, 1u16, schema_checking_mode, false, ClauseType::Unintialized);)?
+            $(algebrizer = Algebrizer::with_schema_env("test".into(), $env, &catalog, 1u16, schema_checking_mode, false, ClauseType::Unintialized, ExpressionContext::default());)?
+            $(algebrizer = algebrizer.with_expression_context($expression_context);)?
 
-            let res: Result<_, Error> = algebrizer.$method($ast $(, $source)? $(, $in_implicit_type_conversion_context)? $(, $is_add_fields)?);
+            let res: Result<_, Error> = algebrizer.$method($ast $(, $source)? $(, $is_add_fields)?);
             $(assert!(matches!(res, $expected_pat));)?
             $(assert_eq!($expected, res);)?
 
@@ -50,12 +51,12 @@ macro_rules! test_algebrize {
 
 #[macro_export]
 macro_rules! test_algebrize_expr_and_schema_check {
-    ($func_name:ident, method = $method:ident, $(in_implicit_type_conversion_context = $in_implicit_type_conversion_context:expr,)? $(expected = $expected:expr,)? $(expected_error_code = $expected_error_code:literal,)? input = $ast:expr, $(source = $source:expr,)? $(env = $env:expr,)? $(catalog = $catalog:expr,)? $(schema_checking_mode = $schema_checking_mode:expr,)?) => {
+    ($func_name:ident, method = $method:ident, $(expression_context = $expression_context:expr,)? $(expected = $expected:expr,)? $(expected_error_code = $expected_error_code:literal,)? input = $ast:expr, $(source = $source:expr,)? $(env = $env:expr,)? $(catalog = $catalog:expr,)? $(schema_checking_mode = $schema_checking_mode:expr,)?) => {
         #[test]
         fn $func_name() {
             #[allow(unused)]
             use $crate::{
-                algebrizer::{Algebrizer, Error, ClauseType},
+                algebrizer::{Algebrizer, ExpressionContext, Error, ClauseType},
                 catalog::Catalog,
                 SchemaCheckingMode,
                 mir::schema::CachedSchema,
@@ -71,9 +72,10 @@ macro_rules! test_algebrize_expr_and_schema_check {
 
             #[allow(unused_mut, unused_assignments)]
             let mut algebrizer = Algebrizer::new("test".into(), &catalog, 0u16, schema_checking_mode, false, ClauseType::Unintialized);
-            $(algebrizer = Algebrizer::with_schema_env("test".into(), $env, &catalog, 1u16, schema_checking_mode, false, ClauseType::Unintialized);)?
+            $(algebrizer = Algebrizer::with_schema_env("test".into(), $env, &catalog, 1u16, schema_checking_mode, false, ClauseType::Unintialized, ExpressionContext::default());)?
+            $(algebrizer = algebrizer.with_expression_context($expression_context);)?
 
-            let res: Result<_, Error> = algebrizer.$method($ast $(, $source)? $(, $in_implicit_type_conversion_context)?);
+            let res: Result<_, Error> = algebrizer.$method($ast $(, $source)?);
             let res = res.unwrap().schema(&algebrizer.schema_inference_state()).map_err(|e|Error::SchemaChecking(e));
             $(assert_eq!($expected, res);)?
 

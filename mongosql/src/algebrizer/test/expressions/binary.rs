@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     add_bin_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Add,
@@ -24,11 +24,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     add_wrong_types,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Add",
         required: NUMERIC_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::String).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Binary(ast::BinaryExpr {
@@ -41,7 +42,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     sub_bin_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Sub,
@@ -62,11 +63,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     sub_wrong_types,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Sub",
         required: NUMERIC_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::String).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Binary(ast::BinaryExpr {
@@ -79,7 +81,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     div_bin_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Div,
@@ -100,7 +102,7 @@ test_algebrize!(
 test_algebrize!(
     cast_div_result_of_two_integers_to_integer,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::Cast(mir::CastExpr {
         expr: Box::new(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
@@ -127,7 +129,7 @@ test_algebrize!(
 test_algebrize!(
     cast_div_result_of_long_and_integer_to_long,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::Cast(mir::CastExpr {
         expr: Box::new(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
@@ -153,7 +155,7 @@ test_algebrize!(
 test_algebrize!(
     cast_implicit_converts_expr_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::Cast(mir::CastExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(42))),
         to: mir::Type::String,
@@ -182,11 +184,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     div_wrong_types,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Div",
         required: NUMERIC_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::String).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Binary(ast::BinaryExpr {
@@ -199,7 +202,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     mul_bin_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Mul,
@@ -220,11 +223,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     mul_wrong_types,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Mul",
         required: NUMERIC_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::String).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Binary(ast::BinaryExpr {
@@ -237,7 +241,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     concat_bin_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Concat,
@@ -258,11 +262,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     concat_wrong_types,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Concat",
         required: STRING_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::Integer).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Binary(ast::BinaryExpr {
@@ -275,7 +280,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     eq_bool_and_int,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Eq,
@@ -296,7 +301,7 @@ test_algebrize!(
 test_algebrize!(
     gt_bool_and_int,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Gt,
@@ -317,7 +322,7 @@ test_algebrize!(
 test_algebrize!(
     and_bool_and_int,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::And,
@@ -338,7 +343,7 @@ test_algebrize!(
 test_algebrize!(
     or_int_and_int,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Or,
@@ -359,7 +364,7 @@ test_algebrize!(
 test_algebrize!(
     add_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Add,
@@ -384,7 +389,7 @@ test_algebrize!(
 test_algebrize!(
     and_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::And,
@@ -409,7 +414,7 @@ test_algebrize!(
 test_algebrize!(
     div_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Div,
@@ -434,7 +439,7 @@ test_algebrize!(
 test_algebrize!(
     mul_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Mul,
@@ -459,7 +464,7 @@ test_algebrize!(
 test_algebrize!(
     or_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Or,
@@ -484,7 +489,7 @@ test_algebrize!(
 test_algebrize!(
     sub_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Sub,
@@ -509,7 +514,7 @@ test_algebrize!(
 test_algebrize!(
     concat_does_not_convert_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Concat,
@@ -538,7 +543,7 @@ test_algebrize!(
 test_algebrize!(
     comp_with_two_strings_does_not_convert_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Eq,
@@ -567,7 +572,7 @@ test_algebrize!(
 test_algebrize!(
     comp_with_left_that_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Gt,
@@ -604,7 +609,7 @@ test_algebrize!(
 test_algebrize!(
     comp_with_left_that_does_not_convert_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Lt,
@@ -643,7 +648,7 @@ test_algebrize!(
 test_algebrize!(
     comp_with_right_that_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Gte,
@@ -680,7 +685,7 @@ test_algebrize!(
 test_algebrize!(
     comp_with_right_that_does_not_convert_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Lte,
@@ -721,7 +726,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_is_transformed_to_in_scalar_function,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -766,7 +771,7 @@ mod in_operator {
     test_algebrize!(
         not_in_operator_is_transformed_to_in_scalar_function,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::NotIn,
@@ -811,7 +816,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_translates_array_with_one_element,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -850,7 +855,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_converts_type_when_left_is_extended_json,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -895,7 +900,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_converts_rhs_strings_when_lhs_is_date_field,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -954,7 +959,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_no_conversion_when_lhs_is_string_field_and_rhs_is_string_constructors,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -999,7 +1004,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_no_conversion_when_both_sides_are_string_constructors,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -1030,7 +1035,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_no_conversion_when_neither_side_has_string_constructors,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,
@@ -1077,7 +1082,7 @@ mod in_operator {
     test_algebrize!(
         in_operator_translates_rhs_on_per_element_basis,
         method = algebrize_expression,
-        in_implicit_type_conversion_context = false,
+        expression_context = ExpressionContext::default(),
         expected = Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
                 function: mir::ScalarFunction::In,

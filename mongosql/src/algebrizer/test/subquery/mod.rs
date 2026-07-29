@@ -39,7 +39,7 @@ lazy_static! {
 test_algebrize!(
     uncorrelated_exists,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Exists(Box::new(Stage::Project(Project {
                         is_add_fields: false,
         source: Box::new(mir_array(1u16)),
@@ -71,7 +71,7 @@ test_algebrize!(
 test_algebrize!(
     correlated_exists,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Exists(Box::new(Stage::Project(Project {
                         is_add_fields: false,
         source: Box::new(mir_array(2u16)),
@@ -117,7 +117,7 @@ test_algebrize!(
 test_algebrize!(
     exists_cardinality_gt_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Exists(Box::new(Stage::Project(Project {
                         is_add_fields: false,
         source: Box::new(Stage::Array(ArraySource {
@@ -164,7 +164,7 @@ test_algebrize!(
 test_algebrize!(
     exists_degree_gt_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Exists(
         Box::new(Stage::Project(Project {
             is_add_fields: false,
@@ -209,7 +209,7 @@ test_algebrize!(
 test_algebrize!(
     uncorrelated_subquery_expr,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Subquery(SubqueryExpr {
         output_expr: Box::new(Expression::FieldAccess(FieldAccess {
             expr: Box::new(Expression::Reference((DatasourceName::Bottom, 1u16).into())),
@@ -253,7 +253,7 @@ test_algebrize!(
 test_algebrize!(
     correlated_subquery_expr,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Subquery(SubqueryExpr {
         output_expr: Box::new(Expression::FieldAccess(FieldAccess {
             expr: Box::new(Expression::Reference((DatasourceName::Bottom, 2u16).into())),
@@ -307,7 +307,7 @@ test_algebrize!(
 test_algebrize!(
     degree_zero_unsat_output,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::InvalidSubqueryDegree),
     expected_error_code = 3022,
     input = ast::Expression::Subquery(Box::new(ast::Query::Select(Box::new(ast::SelectQuery {
@@ -330,7 +330,7 @@ test_algebrize!(
 test_algebrize!(
     substar_degree_eq_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Subquery(SubqueryExpr {
         output_expr: Box::new(Expression::FieldAccess(FieldAccess {
             expr: Box::new(Expression::Reference(("arr", 1u16).into())),
@@ -368,7 +368,7 @@ test_algebrize!(
 test_algebrize!(
     select_values_degree_gt_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::InvalidSubqueryDegree),
     expected_error_code = 3022,
     input = ast::Expression::Subquery(Box::new(ast::Query::Select(Box::new(ast::SelectQuery {
@@ -403,7 +403,7 @@ test_algebrize!(
 test_algebrize!(
     star_degree_eq_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Subquery(SubqueryExpr {
         output_expr: Box::new(Expression::FieldAccess(FieldAccess {
             expr: Box::new(Expression::Reference(("arr", 1u16).into())),
@@ -430,7 +430,7 @@ test_algebrize!(
 test_algebrize!(
     select_star_degree_gt_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::InvalidSubqueryDegree),
     expected_error_code = 3022,
     input = ast::Expression::Subquery(Box::new(ast::Query::Select(Box::new(ast::SelectQuery {
@@ -456,7 +456,7 @@ test_algebrize!(
 test_algebrize!(
     substar_degree_gt_1,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::InvalidSubqueryDegree),
     expected_error_code = 3022,
     input = ast::Expression::Subquery(Box::new(ast::Query::Select(Box::new(ast::SelectQuery {
@@ -486,7 +486,7 @@ test_algebrize!(
 test_algebrize!(
     uncorrelated_subquery_comparison_all,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::SubqueryComparison(SubqueryComparison {
         operator: SubqueryComparisonOp::Eq,
         modifier: SubqueryModifier::All,
@@ -543,7 +543,7 @@ test_algebrize!(
 test_algebrize!(
     uncorrelated_subquery_comparison_any,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::SubqueryComparison(SubqueryComparison {
         operator: SubqueryComparisonOp::Eq,
         modifier: SubqueryModifier::Any,
@@ -598,7 +598,7 @@ test_algebrize!(
 test_algebrize!(
     subquery_comparison_ext_json_arg_converted_if_subquery_is_not_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::SubqueryComparison(SubqueryComparison {
         operator: SubqueryComparisonOp::Eq,
         modifier: SubqueryModifier::Any,
@@ -655,7 +655,7 @@ test_algebrize!(
 test_algebrize!(
     subquery_comparison_ext_json_arg_not_converted_if_subquery_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::SubqueryComparison(SubqueryComparison {
         operator: SubqueryComparisonOp::Eq,
         modifier: SubqueryModifier::Any,
@@ -731,7 +731,7 @@ test_algebrize!(
 test_algebrize!(
     argument_from_super_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::SubqueryComparison(SubqueryComparison {
         operator: SubqueryComparisonOp::Eq,
         modifier: SubqueryModifier::All,
@@ -800,7 +800,7 @@ test_algebrize!(
 test_algebrize!(
     argument_only_evaluated_in_super_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::FieldNotFound(
         "a".into(),
         None,
@@ -834,7 +834,7 @@ test_algebrize!(
 test_algebrize!(
     potentially_missing_column,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(Expression::Subquery(SubqueryExpr {
         output_expr: Box::new(Expression::FieldAccess(FieldAccess {
             expr: Box::new(Expression::Reference((DatasourceName::Bottom, 1u16).into())),

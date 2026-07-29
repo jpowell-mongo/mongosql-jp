@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     extract_year,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Year,
@@ -30,7 +30,7 @@ test_algebrize!(
 test_algebrize!(
     extract_month,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Month,
@@ -57,7 +57,7 @@ test_algebrize!(
 test_algebrize!(
     extract_day,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Day,
@@ -84,7 +84,7 @@ test_algebrize!(
 test_algebrize!(
     extract_hour,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Hour,
@@ -111,7 +111,7 @@ test_algebrize!(
 test_algebrize!(
     extract_minute,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Minute,
@@ -138,7 +138,7 @@ test_algebrize!(
 test_algebrize!(
     extract_second,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Second,
@@ -165,7 +165,7 @@ test_algebrize!(
 test_algebrize!(
     extract_millsecond,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Millisecond,
@@ -192,7 +192,7 @@ test_algebrize!(
 test_algebrize!(
     extract_day_of_year,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::DayOfYear,
@@ -219,7 +219,7 @@ test_algebrize!(
 test_algebrize!(
     extract_iso_week,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::IsoWeek,
@@ -246,7 +246,7 @@ test_algebrize!(
 test_algebrize!(
     extract_day_of_week,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::DayOfWeek,
@@ -273,7 +273,7 @@ test_algebrize!(
 test_algebrize!(
     extract_iso_weekday,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::IsoWeekday,
@@ -300,11 +300,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     extract_must_be_date,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Second",
         required: DATE_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::Integer).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Extract(ast::ExtractExpr {
@@ -316,7 +317,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     extract_implicit_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Year,

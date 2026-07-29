@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     dateadd,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::DateFunction(
         mir::DateFunctionApplication {
             function: mir::DateFunction::Add,
@@ -36,7 +36,7 @@ test_algebrize!(
 test_algebrize!(
     datediff,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::DateFunction(
         mir::DateFunctionApplication {
             function: mir::DateFunction::Diff,
@@ -79,7 +79,7 @@ test_algebrize!(
 test_algebrize!(
     datetrunc,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::DateFunction(
         mir::DateFunctionApplication {
             function: mir::DateFunction::Trunc,
@@ -112,7 +112,7 @@ test_algebrize!(
 test_algebrize!(
     date_function_implicit_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::DateFunction(
         mir::DateFunctionApplication {
             function: mir::DateFunction::Add,

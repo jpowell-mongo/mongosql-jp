@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     simple,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -25,7 +25,7 @@ test_algebrize!(
 test_algebrize!(
     does_not_convert_ext_json_if_all_are_strings,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -59,7 +59,7 @@ test_algebrize!(
 test_algebrize!(
     convert_arg_and_min_ext_json_if_max_is_non_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -99,7 +99,7 @@ test_algebrize!(
 test_algebrize!(
     do_not_convert_arg_or_min_ext_json_if_max_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -143,7 +143,7 @@ test_algebrize!(
 test_algebrize!(
     convert_arg_and_max_ext_json_if_min_is_non_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -183,7 +183,7 @@ test_algebrize!(
 test_algebrize!(
     do_not_convert_arg_or_max_ext_json_if_min_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -227,7 +227,7 @@ test_algebrize!(
 test_algebrize!(
     convert_min_and_max_ext_json_if_arg_is_non_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -267,7 +267,7 @@ test_algebrize!(
 test_algebrize!(
     do_not_convert_min_or_max_ext_json_if_arg_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -311,7 +311,7 @@ test_algebrize!(
 test_algebrize!(
     convert_arg_ext_json_if_neither_min_nor_max_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -354,7 +354,7 @@ test_algebrize!(
 test_algebrize!(
     convert_arg_ext_json_if_one_of_min_or_max_is_non_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -397,7 +397,7 @@ test_algebrize!(
 test_algebrize!(
     do_not_convert_arg_ext_json_if_both_min_and_max_are_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -442,7 +442,7 @@ test_algebrize!(
 test_algebrize!(
     convert_min_ext_json_if_neither_arg_nor_max_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -485,7 +485,7 @@ test_algebrize!(
 test_algebrize!(
     convert_min_ext_json_if_one_of_arg_or_max_is_non_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -528,7 +528,7 @@ test_algebrize!(
 test_algebrize!(
     do_not_convert_min_ext_json_if_both_arg_and_max_are_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -573,7 +573,7 @@ test_algebrize!(
 test_algebrize!(
     convert_max_ext_json_if_neither_arg_nor_min_is_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -616,7 +616,7 @@ test_algebrize!(
 test_algebrize!(
     convert_max_ext_json_if_one_of_arg_or_min_is_non_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,
@@ -659,7 +659,7 @@ test_algebrize!(
 test_algebrize!(
     do_not_convert_max_ext_json_if_both_arg_and_min_are_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Between,

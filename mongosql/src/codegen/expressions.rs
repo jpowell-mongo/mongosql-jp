@@ -32,7 +32,7 @@ impl MqlCodeGenerator {
             SqlDivide(sd) => self.codegen_sql_divide(sd),
             Trim(trim) => self.codegen_trim(trim),
             Map(m) => self.codegen_map(m),
-            Filter(_) => unimplemented!("SQL-3290"),
+            Filter(f) => self.codegen_filter(f),
             Reduce(r) => self.codegen_reduce(r),
             Subquery(s) => self.codegen_subquery_expr(s),
             SubqueryComparison(sc) => self.codegen_subquery_comparison(sc),
@@ -68,6 +68,11 @@ impl MqlCodeGenerator {
             .into_iter()
             .map(|x| self.codegen_expression(x))
             .collect::<Result<Vec<_>>>()?;
+
+        if mql_op.op == air::MqlOperator::NotIn {
+            return Ok(bson::bson!({ "$not": [{ "$in": Bson::Array(ops) }] }));
+        }
+
         let operator = Self::to_mql_op(mql_op.op);
         Ok(bson::bson!({ operator: Bson::Array(ops) }))
     }
@@ -377,6 +382,19 @@ impl MqlCodeGenerator {
         }
 
         Ok(bson!({"$map": doc}))
+    }
+
+    fn codegen_filter(&self, f: air::Filter) -> Result<Bson> {
+        let input = self.codegen_expression(*f.input)?;
+        let inside = self.codegen_expression(*f.inside)?;
+
+        let mut doc = doc! {"input": input, "cond": inside};
+
+        if let Some(as_name) = f.as_name {
+            doc.insert("as", as_name);
+        }
+
+        Ok(bson!({"$filter": doc}))
     }
 
     fn codegen_reduce(&self, reduce: air::Reduce) -> Result<Bson> {

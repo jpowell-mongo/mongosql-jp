@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     ltrim,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::LTrim,
@@ -24,7 +24,7 @@ test_algebrize!(
 test_algebrize!(
     rtrim,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::RTrim,
@@ -45,7 +45,7 @@ test_algebrize!(
 test_algebrize!(
     btrim,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::BTrim,
@@ -66,11 +66,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     trim_arg_must_be_string_or_null,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "BTrim",
         required: STRING_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::Integer).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Trim(ast::TrimExpr {
@@ -83,11 +84,12 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize_expr_and_schema_check!(
     trim_escape_must_be_string,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "BTrim",
         required: STRING_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::Integer).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Trim(ast::TrimExpr {

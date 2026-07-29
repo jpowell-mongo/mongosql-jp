@@ -2,10 +2,12 @@ use crate::{
     map,
     mir::{
         binding_tuple::DatasourceName::Bottom,
-        schema::{Atomic, Document, Error as mir_error, SchemaCache},
+        schema::{
+            errors::IncorrectArgCountPrecision, Atomic, Document, Error as mir_error, SchemaCache,
+        },
         ArraySource, Collection, Expression, FieldAccess, LiteralValue, Project, ScalarFunction,
         ScalarFunctionApplication, Stage, SubqueryComparison, SubqueryComparisonOp, SubqueryExpr,
-        SubqueryModifier,
+        SubqueryModifier, Variable,
     },
     schema::{Schema, ANY_DOCUMENT},
     set, test_schema, unchecked_unique_linked_hash_map,
@@ -75,7 +77,7 @@ mod exists {
         expected_error_code = 1001,
         expected = Err(mir_error::IncorrectArgumentCount {
             name: "Div",
-            required: 2,
+            required: IncorrectArgCountPrecision::Exact(2),
             found: 3
         }),
         input = Expression::Exists(
@@ -392,11 +394,12 @@ mod subquery_comparison {
     test_schema!(
         incomparable_argument_and_output_expr,
         expected_error_code = 1005,
-        expected = Err(mir_error::InvalidComparison(
-            "subquery comparison",
-            Schema::Atomic(Atomic::String).into(),
-            Schema::AnyOf(set![Schema::Atomic(Atomic::Integer)]).into(),
-        )),
+        expected = Err(mir_error::InvalidComparison {
+            name: "subquery comparison",
+            left: Schema::Atomic(Atomic::String).into(),
+            right: Schema::AnyOf(set![Schema::Atomic(Atomic::Integer)]).into(),
+            var_cause: None,
+        }),
         input = Expression::SubqueryComparison(SubqueryComparison {
             operator: SubqueryComparisonOp::Eq,
             modifier: SubqueryModifier::All,
@@ -420,5 +423,45 @@ mod subquery_comparison {
             },
             is_nullable: true,
         }),
+    );
+
+    test_schema!(
+        incomparable_argument_and_output_expr_with_var_cause,
+        expected_error_code = 1005,
+        expected = Err(mir_error::InvalidComparison {
+            name: "subquery comparison",
+            left: Schema::Atomic(Atomic::String).into(),
+            right: Schema::AnyOf(set![Schema::Atomic(Atomic::Integer)]).into(),
+            var_cause: Some("this".to_string()),
+        }),
+        input = Expression::SubqueryComparison(SubqueryComparison {
+            operator: SubqueryComparisonOp::Eq,
+            modifier: SubqueryModifier::All,
+            argument: Box::new(Expression::Variable(Variable {
+                name: "this".to_string(),
+                is_nullable: false,
+            })),
+            subquery_expr: SubqueryExpr {
+                output_expr: Box::new(Expression::FieldAccess(FieldAccess::new(
+                    Box::new(Expression::Reference(("foo", 1u16).into())),
+                    "a".into(),
+                ))),
+                subquery: Box::new(Stage::Array(ArraySource {
+                    array: vec![Expression::Document(
+                        unchecked_unique_linked_hash_map! {
+                            "a".into() => Expression::Literal(LiteralValue::Integer(5))
+                        }
+                        .into()
+                    )],
+                    alias: "foo".into(),
+                    cache: SchemaCache::new(),
+                })),
+                is_nullable: false,
+            },
+            is_nullable: true,
+        }),
+        variables = map! {
+            "this" => Schema::Atomic(Atomic::String),
+        },
     );
 }

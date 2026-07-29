@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     searched_case,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SearchedCase(mir::SearchedCaseExpr {
         when_branch: vec![mir::WhenBranch {
             when: Box::new(mir::Expression::Literal(mir::LiteralValue::Boolean(true))),
@@ -30,7 +30,7 @@ test_algebrize!(
 test_algebrize!(
     searched_case_no_else,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SearchedCase(mir::SearchedCaseExpr {
         when_branch: vec![mir::WhenBranch {
             when: Box::new(mir::Expression::Literal(mir::LiteralValue::Boolean(true))),
@@ -55,11 +55,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     searched_case_when_condition_is_not_bool,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "SearchedCase",
         required: BOOLEAN_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::String).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Case(ast::CaseExpr {
@@ -75,7 +76,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     searched_case_nullable_then_expression_is_nullable,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SearchedCase(mir::SearchedCaseExpr {
         when_branch: vec![mir::WhenBranch {
             when: Box::new(mir::Expression::Literal(mir::LiteralValue::Boolean(true))),
@@ -100,7 +101,7 @@ test_algebrize!(
 test_algebrize!(
     searched_case_nullable_else_expression_is_nullable,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SearchedCase(mir::SearchedCaseExpr {
         when_branch: vec![mir::WhenBranch {
             when: Box::new(mir::Expression::Literal(mir::LiteralValue::Boolean(true))),
@@ -123,7 +124,7 @@ test_algebrize!(
 test_algebrize!(
     simple_case,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),
         when_branch: vec![mir::WhenBranch {
@@ -151,7 +152,7 @@ test_algebrize!(
 test_algebrize!(
     simple_case_no_else,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),
         when_branch: vec![mir::WhenBranch {
@@ -177,13 +178,14 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     simple_case_operand_and_when_operand_not_comparable,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(
-        mir::schema::Error::InvalidComparison(
-            "SimpleCase",
-            Schema::Atomic(Atomic::Integer).into(),
-            Schema::Atomic(Atomic::String).into(),
-        )
+        mir::schema::Error::InvalidComparison {
+            name: "SimpleCase",
+            left: Schema::Atomic(Atomic::Integer).into(),
+            right: Schema::Atomic(Atomic::String).into(),
+            var_cause: None,
+        }
     )),
     expected_error_code = 1005,
     input = ast::Expression::Case(ast::CaseExpr {
@@ -199,7 +201,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     simple_case_nullable_then_expression_is_nullable,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),
         when_branch: vec![mir::WhenBranch {
@@ -225,7 +227,7 @@ test_algebrize!(
 test_algebrize!(
     simple_case_nullable_else_expression_is_nullable,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),
         when_branch: vec![mir::WhenBranch {
@@ -251,7 +253,7 @@ test_algebrize!(
 test_algebrize!(
     simple_case_expr_not_string_implicit_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),
         when_branch: vec![mir::WhenBranch {
@@ -285,7 +287,7 @@ test_algebrize!(
 test_algebrize!(
     simple_case_string_expr_does_not_implicit_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::String(
             "hello".to_string()
@@ -317,7 +319,7 @@ test_algebrize!(
 test_algebrize!(
     simple_case_where_all_strings_does_not_implicit_convert_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SimpleCase(mir::SimpleCaseExpr {
         expr: Box::new(mir::Expression::Literal(mir::LiteralValue::String(
             "{\"$numberInt\": \"1\"}".to_string()
@@ -349,7 +351,7 @@ test_algebrize!(
 test_algebrize!(
     searched_case_implicit_converts_when_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::SearchedCase(mir::SearchedCaseExpr {
         when_branch: vec![mir::WhenBranch {
             when: Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),

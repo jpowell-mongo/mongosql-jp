@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     neg_unary_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Neg,
@@ -20,11 +20,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     neg_wrong_type,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Neg",
         required: NUMERIC_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::Boolean).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Unary(ast::UnaryExpr {
@@ -36,7 +37,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     pos_unary_op,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Pos,
@@ -53,11 +54,12 @@ test_algebrize!(
 test_algebrize_expr_and_schema_check!(
     pos_wrong_type,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::SchemaChecking(mir::schema::Error::SchemaChecking {
         name: "Pos",
         required: NUMERIC_OR_NULLISH.clone().into(),
         found: Schema::Atomic(Atomic::Boolean).into(),
+        var_cause: None,
     })),
     expected_error_code = 1002,
     input = ast::Expression::Unary(ast::UnaryExpr {
@@ -69,7 +71,7 @@ test_algebrize_expr_and_schema_check!(
 test_algebrize!(
     unary_op_implicit_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::ScalarFunction(
         mir::ScalarFunctionApplication {
             function: mir::ScalarFunction::Neg,

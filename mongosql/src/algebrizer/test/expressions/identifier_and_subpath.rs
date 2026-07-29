@@ -3,7 +3,7 @@ use super::*;
 test_algebrize!(
     qualified_ref_in_current_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 1u16).into())),
         field: "a".into(),
@@ -36,7 +36,7 @@ test_algebrize!(
 test_algebrize!(
     qualified_ref_in_super_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 0u16).into())),
         field: "a".into(),
@@ -69,7 +69,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_may_exist_in_current_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 1u16).into())),
         field: "a".into(),
@@ -91,7 +91,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_must_exist_in_current_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 1u16).into())),
         field: "a".into(),
@@ -113,7 +113,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_may_exist_only_in_super_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 0u16).into())),
         field: "a".into(),
@@ -136,7 +136,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_must_exist_in_super_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 0u16).into())),
         field: "a".into(),
@@ -159,7 +159,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_must_exist_in_super_scope_bot_source,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(Key::bot(0u16).into())),
         field: "a".into(),
@@ -182,7 +182,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_may_and_must_exist_in_two_sources_one_of_which_is_bot,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(Key::bot(1u16).into())),
         field: "a".into(),
@@ -212,7 +212,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_ref_must_exist_in_two_non_bot_sources,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::AmbiguousField(
         "a".into(),
         ClauseType::Unintialized,
@@ -243,7 +243,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_subpath_in_current_and_super_must_exist_in_current,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::FieldAccess(mir::FieldAccess {
             expr: Box::new(mir::Expression::Reference(("test", 1u16).into())),
@@ -290,7 +290,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_subpath_in_current_and_super_may_exist_is_ambiguous,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::AmbiguousField(
         "a".into(),
         ClauseType::Unintialized,
@@ -333,7 +333,7 @@ test_algebrize!(
 test_algebrize!(
     subpath_implicit_converts_ext_json,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Document(
             unchecked_unique_linked_hash_map! {
@@ -363,7 +363,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_subpath_in_super_scope,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::FieldAccess(mir::FieldAccess {
             expr: Box::new(mir::Expression::Reference(("super_test", 0u16).into())),
@@ -410,7 +410,7 @@ test_algebrize!(
 test_algebrize!(
     qualified_ref_prefers_super_datasource_to_local_field,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::Reference(("foo", 0u16).into())),
         field: "a".into(),
@@ -449,7 +449,7 @@ test_algebrize!(
 test_algebrize!(
     qualified_ref_to_local_field,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Ok(mir::Expression::FieldAccess(mir::FieldAccess {
         expr: Box::new(mir::Expression::FieldAccess(mir::FieldAccess {
             expr: Box::new(mir::Expression::Reference(("bar", 1u16).into())),
@@ -495,7 +495,7 @@ test_algebrize!(
 test_algebrize!(
     unqualified_reference_and_may_contain_sub_and_must_contain_outer_is_ambiguous,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::AmbiguousField(
         "a".into(),
         ClauseType::Unintialized,
@@ -539,7 +539,7 @@ test_algebrize!(
 test_algebrize!(
     ref_does_not_exist,
     method = algebrize_expression,
-    in_implicit_type_conversion_context = false,
+    expression_context = ExpressionContext::default(),
     expected = Err(Error::FieldNotFound(
         "bar".into(),
         None,

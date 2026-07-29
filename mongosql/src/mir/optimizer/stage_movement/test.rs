@@ -41,7 +41,7 @@ lazy_static! {
                 required: set!{"x".to_string()},
                 additional_properties: false,
                 ..Default::default()
-                }
+            }
         ),
         ("foo", "bar2").into() => Schema::Document(
             schema::Document {
@@ -72,7 +72,17 @@ lazy_static! {
                 required: set!{"x".to_string()},
                 additional_properties: false,
                 ..Default::default()
-                }
+            }
+        ),
+        ("foo", "bar3").into() => Schema::Document(
+            schema::Document {
+                keys: map! {
+                    "d".to_string() => schema::Schema::Atomic(schema::Atomic::Integer),
+                },
+                required: set!{"d".to_string()},
+                additional_properties: false,
+                ..Default::default()
+            }
         ),
         // Two aliases of the `nation` collection, used to model a self-join whose WHERE clause
         // references both correlated aliases (see
@@ -171,6 +181,7 @@ macro_rules! test_move_stage {
                     0,
                     SchemaEnvironment::new(),
                     &*CATALOG,
+                    map! {},
                     SchemaCheckingMode::Relaxed,
                 ),
             );
@@ -1741,6 +1752,34 @@ test_move_stage_no_op!(
     })
 );
 
+test_move_stage_no_op!(
+    cannot_move_filter_above_lateral_left_join_if_correlated_conditions,
+    Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
+        join_type: JoinType::Left,
+        source: mir_collection("foo", "bar"),
+        subquery: Box::new(Stage::Filter(Filter {
+            source: Box::new(Stage::MqlIntrinsic(MqlStage::EquiJoin(EquiJoin {
+                join_type: JoinType::Inner,
+                source: mir_collection("foo", "bar2"),
+                from: mir_collection("foo", "bar3"),
+                local_field: Box::new(mir_field_path("bar2", vec!["x", "a", "b"])),
+                foreign_field: Box::new(mir_field_path("bar3", vec!["d"])),
+                cache: SchemaCache::new(),
+            }))),
+            condition: Expression::ScalarFunction(ScalarFunctionApplication {
+                function: ScalarFunction::Eq,
+                args: vec![
+                    *mir_field_access_multi_part("bar2", vec!["x", "a", "b"], false),
+                    *mir_field_access("bar", "y", false),
+                ],
+                is_nullable: false,
+            }),
+            cache: SchemaCache::new(),
+        })),
+        cache: SchemaCache::new(),
+    }))
+);
+
 test_move_stage!(
     move_filter_above_lateral_inner_join_if_only_left_datasource_is_used,
     expected = Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
@@ -1939,7 +1978,7 @@ test_move_stage!(
 // leaf is a `<field> = <literal>` comparison:
 //
 //     SELECT ...
-//     FROM lineitem, nation n1, nation n2
+//     FROM nation n1, nation n2
 //     WHERE (n1.n_name = 'UNITED STATES' AND n2.n_name = 'JAPAN')
 //        OR (n1.n_name = 'JAPAN' AND n2.n_name = 'UNITED STATES')
 //
@@ -1966,6 +2005,67 @@ test_move_stage!(
             cache: SchemaCache::new(),
         }))),
         condition: nation_names_match_condition(),
+        cache: SchemaCache::new(),
+    }))),
+);
+
+test_move_stage!(
+    move_match_filter_into_lateral_inner_join_subquery_if_both_datasources_are_used,
+    expected = Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
+        join_type: JoinType::Inner,
+        source: mir_collection("foo", "bar"),
+        subquery: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+            MatchFilter {
+                source: mir_collection("foo", "bar2"),
+                condition: MatchQuery::Logical(MatchLanguageLogical {
+                    op: MatchLanguageLogicalOp::And,
+                    args: vec![
+                        MatchQuery::Comparison(MatchLanguageComparison {
+                            function: MatchLanguageComparisonOp::Gt,
+                            input: Some(mir_field_path("bar2", vec!["x", "a", "b"])),
+                            arg: LiteralValue::Integer(24),
+                            cache: SchemaCache::new(),
+                        }),
+                        MatchQuery::Comparison(MatchLanguageComparison {
+                            function: MatchLanguageComparisonOp::Gt,
+                            input: Some(mir_field_path("bar", vec!["y"])),
+                            arg: LiteralValue::Integer(25),
+                            cache: SchemaCache::new(),
+                        }),
+                    ],
+                    cache: SchemaCache::new(),
+                }),
+                cache: SchemaCache::new(),
+            }
+        )))),
+        cache: SchemaCache::new(),
+    })),
+    expected_changed = true,
+    input = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Box::new(Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
+            join_type: JoinType::Inner,
+            source: mir_collection("foo", "bar"),
+            subquery: mir_collection("foo", "bar2"),
+            cache: SchemaCache::new(),
+        }))),
+        condition: MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::And,
+            args: vec![
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Gt,
+                    input: Some(mir_field_path("bar2", vec!["x", "a", "b"])),
+                    arg: LiteralValue::Integer(24),
+                    cache: SchemaCache::new(),
+                }),
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Gt,
+                    input: Some(mir_field_path("bar", vec!["y"])),
+                    arg: LiteralValue::Integer(25),
+                    cache: SchemaCache::new(),
+                }),
+            ],
+            cache: SchemaCache::new(),
+        }),
         cache: SchemaCache::new(),
     }))),
 );

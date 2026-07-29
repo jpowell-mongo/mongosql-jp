@@ -17,7 +17,7 @@ use crate::{
     util::unique_linked_hash_map::UniqueLinkedHashMap,
     SchemaCheckingMode,
 };
-use std::{cell::RefCell, collections::BTreeSet};
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -231,12 +231,34 @@ impl std::fmt::Display for ClauseType {
 #[derive(Debug, Clone)]
 pub struct Algebrizer<'a> {
     current_db: &'a str,
-    pub schema_env: SchemaEnvironment,
+    pub schema_env: Rc<SchemaEnvironment>,
     catalog: &'a Catalog,
     scope_level: u16,
     schema_checking_mode: SchemaCheckingMode,
     allow_order_by_missing_columns: bool,
     clause_type: RefCell<ClauseType>,
+    expression_context: ExpressionContext,
+}
+
+/// ExpressionContext contains information about the context in which an expression is being
+/// algebrized. In certain contexts, certain ast::Expressions are resolved differently. See fields
+/// for more information.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ExpressionContext {
+    // Indicates if the expression is being algebrized in an implicit type conversion context.
+    // An expression is "in an implicit type conversion context" whenever it appears in a place
+    // where a string is unexpected. For example, the operands of a numeric operator like + are
+    // unexpected to be strings. MongoSQL supports implicit type conversion from extended-JSON
+    // encoded string literals to the corresponding BSON type in these contexts.
+    in_implicit_type_conversion_ctx: bool,
+}
+
+impl ExpressionContext {
+    pub(crate) fn with_implicit_type_conversion_ctx(self, value: bool) -> Self {
+        Self {
+            in_implicit_type_conversion_ctx: value,
+        }
+    }
 }
 
 impl<'a> Algebrizer<'a> {
@@ -256,9 +278,11 @@ impl<'a> Algebrizer<'a> {
             schema_checking_mode,
             allow_order_by_missing_columns,
             clause_type,
+            ExpressionContext::default(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_schema_env(
         current_db: &'a str,
         schema_env: SchemaEnvironment,
@@ -267,24 +291,27 @@ impl<'a> Algebrizer<'a> {
         schema_checking_mode: SchemaCheckingMode,
         allow_order_by_missing_columns: bool,
         clause_type: ClauseType,
+        expression_context: ExpressionContext,
     ) -> Self {
         Self {
             current_db,
-            schema_env,
+            schema_env: Rc::new(schema_env),
             catalog,
             scope_level,
             schema_checking_mode,
             allow_order_by_missing_columns,
             clause_type: RefCell::new(clause_type),
+            expression_context,
         }
     }
 
     pub fn schema_inference_state(&self) -> SchemaInferenceState<'_> {
         SchemaInferenceState {
-            env: self.schema_env.clone(),
+            env: (*self.schema_env).clone(),
             catalog: self.catalog,
             scope_level: self.scope_level,
             schema_checking_mode: self.schema_checking_mode,
+            variables: map! {},
         }
     }
 
@@ -295,12 +322,33 @@ impl<'a> Algebrizer<'a> {
             catalog: self.catalog,
             scope_level: self.scope_level + 1,
             schema_checking_mode: self.schema_checking_mode,
+            allow_order_by_missing_columns: self.allow_order_by_missing_columns,
             // subquery should use a copy of the current ClauseType, not share a RefCell with the
             // parent. It probably does not matter, but we do not want subqueries to modify parent
             // state.
+            clause_type: RefCell::new(*self.clause_type.borrow()),
+            expression_context: self.expression_context,
+        }
+    }
+
+    pub(crate) fn with_expression_context(&self, context: ExpressionContext) -> Self {
+        Self {
+            current_db: self.current_db,
+            schema_env: self.schema_env.clone(),
+            catalog: self.catalog,
+            scope_level: self.scope_level,
+            schema_checking_mode: self.schema_checking_mode,
             allow_order_by_missing_columns: self.allow_order_by_missing_columns,
             clause_type: RefCell::new(*self.clause_type.borrow()),
+            expression_context: context,
         }
+    }
+
+    fn with_implicit_type_conversion_ctx(&self, value: bool) -> Self {
+        self.with_expression_context(
+            self.expression_context
+                .with_implicit_type_conversion_ctx(value),
+        )
     }
 
     fn args_are_nullable(args: &[mir::Expression]) -> bool {
@@ -314,8 +362,8 @@ impl<'a> Algebrizer<'a> {
         if matches!(func, mir::ScalarFunction::In | mir::ScalarFunction::NotIn) {
             Self::determine_in_expression_nullability(args)
         } else {
-            // some functions can always be nullable regardless of argument nullablity,
-            // we check those first. If this function is not one of those, we set nullablity
+            // some functions can always be nullable regardless of argument nullability,
+            // we check those first. If this function is not one of those, we set nullability
             // based off the arguments.
             func.is_always_nullable() || Self::args_are_nullable(args)
         }
@@ -345,11 +393,16 @@ impl<'a> Algebrizer<'a> {
         }
     }
 
-    fn with_merged_mappings(mut self, mappings: SchemaEnvironment) -> Result<Self> {
-        self.schema_env
+    fn with_merged_mappings(&self, mappings: SchemaEnvironment) -> Result<Self> {
+        let mut merged_env = (*self.schema_env).clone();
+        merged_env
             .merge(mappings)
             .map_err(|e| Error::DuplicateKey(e.key))?;
-        Ok(self)
+        Ok(Self {
+            schema_env: Rc::new(merged_env),
+            clause_type: RefCell::new(*self.clause_type.borrow()),
+            ..*self
+        })
     }
 
     pub fn construct_field_access_expr(
@@ -470,14 +523,15 @@ impl<'a> Algebrizer<'a> {
         is_add_fields: bool,
         is_distinct: bool,
     ) -> Result<mir::Stage> {
-        let expression_algebrizer = self.clone();
         // Algebrization for every node that has a source should get the schema for the source.
         // The SchemaEnvironment from the source is merged into the SchemaEnvironment from the
         // current Algebrizer, correctly giving us the correlated bindings with the bindings
         // available from the current query level.
-        #[allow(unused_variables)]
-        let expression_algebrizer = expression_algebrizer
-            .with_merged_mappings(source.schema(&self.schema_inference_state())?.schema_env)?;
+        let expression_algebrizer = self
+            .with_merged_mappings(source.schema(&self.schema_inference_state())?.schema_env)?
+            // We should not algebrize the select values body exprs in an implicit type conversion
+            // context since there is no specific type expected for these values.
+            .with_implicit_type_conversion_ctx(false);
 
         // We must check for duplicate Datasource Keys, which is an error. The datasources
         // Set keeps track of which Keys have been seen.
@@ -504,7 +558,7 @@ impl<'a> Algebrizer<'a> {
                     // for now, and depending on the rest of the select query, a DuplicateKey or SchemaChecking
                     // error will occur downstream.
                     _ => {
-                        let e = expression_algebrizer.algebrize_expression(e, false)?;
+                        let e = expression_algebrizer.algebrize_expression(e)?;
                         let bot = Key::bot(expression_algebrizer.scope_level);
                         datasources
                             .insert(bot.clone())
@@ -549,8 +603,8 @@ impl<'a> Algebrizer<'a> {
         // if we found Expressions's, algebrize them as a single document, and add it to the expression
         // under the Bottom namespace.
         if let Some(bottom) = bottom {
-            let e = expression_algebrizer
-                .algebrize_expression(ast::Expression::Document(bottom), false)?;
+            let e =
+                expression_algebrizer.algebrize_expression(ast::Expression::Document(bottom))?;
             let bot = Key::bot(expression_algebrizer.scope_level);
             datasources
                 .insert(bot.clone())
@@ -658,10 +712,13 @@ impl<'a> Algebrizer<'a> {
         if !array_is_literal {
             return Err(Error::ArrayDatasourceMustBeLiteral);
         }
+        // We should not algebrize the array element exprs in an implicit type conversion context
+        // since there is no specific type expected for these values.
+        let element_algebrizer = self.with_implicit_type_conversion_ctx(false);
         let src = mir::Stage::Array(mir::ArraySource {
             array: ve
                 .into_iter()
-                .map(|e| self.algebrize_expression(e, false))
+                .map(|e| element_algebrizer.algebrize_expression(e))
                 .collect::<Result<_>>()?,
             alias,
             cache: SchemaCache::new(),
@@ -711,18 +768,27 @@ impl<'a> Algebrizer<'a> {
         let right_src = self.algebrize_datasource(*j.right)?;
         let left_src_result_set = left_src.schema(&self.schema_inference_state())?;
         let right_src_result_set = right_src.schema(&self.schema_inference_state())?;
-        let join_algebrizer = self
-            .clone()
+        let condition_algebrizer = self
             .with_merged_mappings(left_src_result_set.schema_env)?
-            .with_merged_mappings(right_src_result_set.schema_env)?;
+            .with_merged_mappings(right_src_result_set.schema_env)?
+            // Although the condition expression is expected to Boolean (or nullish), we choose not
+            // to algebrize it in an implicit type conversion context. We do this because we do not
+            // want to confuse users with seemingly inconsistent behavior. For example, if the user
+            // wrote `... FROM foo JOIN bar ON 'false'` and we implicitly converted the `'false'` to
+            // `false`, the join condition would fail for all rows. But if they wrote `... FROM foo
+            // JOIN bar ON 'false'::BOOL`, the `CAST` would convert the `'false'` to `true`! And the
+            // join condition would succeed for all rows! This is because in MongoDB, any String
+            // unconditionally converts to true when casting to a Boolean. Given that potential for
+            // "inconsistency", we choose not to implicitly convert the condition expression.
+            .with_implicit_type_conversion_ctx(false);
         let condition = j
             .condition
-            .map(|e| join_algebrizer.algebrize_expression(e, false))
+            .map(|e| condition_algebrizer.algebrize_expression(e))
             .transpose()?
             .map(Self::convert_literal_to_bool);
         condition
             .clone()
-            .map(|e| e.schema(&join_algebrizer.schema_inference_state()));
+            .map(|e| e.schema(&condition_algebrizer.schema_inference_state()));
         let stage = match j.join_type {
             ast::JoinType::Left => {
                 if condition.is_none() {
@@ -898,22 +964,11 @@ impl<'a> Algebrizer<'a> {
                 }
 
                 let mut project_expression = UniqueLinkedHashMap::new();
-                let mut sub_schema_env = SchemaEnvironment::new();
-                sub_schema_env.insert(key.clone(), schema);
-                let path_algebrizer = Algebrizer::with_schema_env(
-                    self.current_db,
-                    sub_schema_env,
-                    self.catalog,
-                    self.scope_level,
-                    self.schema_checking_mode,
-                    self.allow_order_by_missing_columns,
-                    *self.clause_type.borrow(),
-                );
                 project_expression
                     .insert_many(field_paths_copy.into_iter().map(|path| {
                         (
                             path.join(separator),
-                            path_algebrizer.algebrize_flattened_field_path(key.clone(), path),
+                            Self::build_flattened_field_access(key.clone(), &path, &schema),
                         )
                     }))
                     .map_err(|e| Error::DuplicateDocumentKey(e.get_key_name()))?;
@@ -963,6 +1018,7 @@ impl<'a> Algebrizer<'a> {
             self.schema_checking_mode,
             self.allow_order_by_missing_columns,
             *self.clause_type.borrow(),
+            self.expression_context,
         );
 
         let path = match path {
@@ -994,21 +1050,34 @@ impl<'a> Algebrizer<'a> {
     /// expression which consists of only other FieldAccess expressions up the
     /// chain of exprs until it hits a Reference expression.
     fn algebrize_unwind_path(&self, path: ast::Expression) -> Result<mir::FieldPath> {
-        let path = self.algebrize_expression(path, false)?;
+        let path = self.algebrize_expression(path)?;
         (&path).try_into().map_err(|_| Error::InvalidUnwindPath)
     }
 
-    #[allow(clippy::only_used_in_recursion)] // false positive
-    pub fn algebrize_flattened_field_path(&self, key: Key, path: Vec<String>) -> mir::Expression {
-        match path.len() {
-            0 => mir::Expression::Reference(mir::ReferenceExpr { key }),
-            _ => self
-                .construct_field_access_expr(
-                    self.algebrize_flattened_field_path(key, path.split_last().unwrap().1.to_vec()),
-                    path.last().unwrap().to_string(),
-                )
-                .unwrap(),
+    // Construct the nested FieldAccess expression for a single flattened field path in
+    // O(path_depth) time. It tracks the current schema while traversing the path, computing
+    // is_nullable at each level directly from the sub-schema.
+    fn build_flattened_field_access(
+        key: Key,
+        path: &[String],
+        root_schema: &schema::Schema,
+    ) -> mir::Expression {
+        let mut expr = mir::Expression::Reference(mir::ReferenceExpr { key });
+        // Avoid cloning the (potentially huge) root schema: narrow from a borrow for the first
+        // field, then from the owned narrowed sub-schema for subsequent fields.
+        let mut current_schema: Option<schema::Schema> = None;
+        for field in path {
+            let accessee = current_schema.as_ref().unwrap_or(root_schema);
+            let next_schema = mir::Expression::get_field_schema(accessee, field);
+            let is_nullable = NULLISH.satisfies(&next_schema) != Satisfaction::Not;
+            current_schema = Some(next_schema);
+            expr = mir::Expression::FieldAccess(mir::FieldAccess {
+                expr: Box::new(expr),
+                field: field.clone(),
+                is_nullable,
+            });
         }
+        expr
     }
 
     pub fn algebrize_having_clause(
@@ -1037,13 +1106,25 @@ impl<'a> Algebrizer<'a> {
         let filtered = match ast_node {
             None => source,
             Some(expr) => {
-                let expression_algebrizer = self.clone().with_merged_mappings(
-                    source.schema(&self.schema_inference_state())?.schema_env,
-                )?;
+                let expression_algebrizer = self
+                    .with_merged_mappings(
+                        source.schema(&self.schema_inference_state())?.schema_env,
+                    )?
+                    // Although the condition expression is expected to Boolean (or nullish), we
+                    // choose not to algebrize it in an implicit type conversion context. We do this
+                    // because we do not want to confuse users with seemingly inconsistent behavior.
+                    // For example, if the user wrote `... FROM foo WHERE 'false'` and we implicitly
+                    // converted the `'false'` to `false`, the filter would fail for all rows. But
+                    // if they wrote `... FROM foo WHERE 'false'::BOOL`, the `CAST` would convert
+                    // the `'false'` to `true`, and the filter would succeed for all rows! This is
+                    // because in MongoDB, any String unconditionally converts to true when casting
+                    // to a Boolean. Given that potential for "inconsistency", we choose not to
+                    // implicitly convert the condition expression.
+                    .with_implicit_type_conversion_ctx(false);
                 mir::Stage::Filter(mir::Filter {
                     source: Box::new(source),
                     condition: expression_algebrizer
-                        .algebrize_expression(expr, false)
+                        .algebrize_expression(expr)
                         .map(Self::convert_literal_to_bool)?,
                     cache: SchemaCache::new(),
                 })
@@ -1204,8 +1285,10 @@ impl<'a> Algebrizer<'a> {
     ) -> Result<mir::Stage> {
         *self.clause_type.borrow_mut() = ClauseType::OrderBy;
         let expression_algebrizer = self
-            .clone()
-            .with_merged_mappings(source.schema(&self.schema_inference_state())?.schema_env)?;
+            .with_merged_mappings(source.schema(&self.schema_inference_state())?.schema_env)?
+            // We should not algebrize the sort key exprs in an implicit type conversion
+            // context since there is no specific type expected for these values.
+            .with_implicit_type_conversion_ctx(false);
         let ordered = match ast_node {
             None => source,
             Some(o) => {
@@ -1215,7 +1298,7 @@ impl<'a> Algebrizer<'a> {
                     .map(|s| {
                         let sort_key = match s.key {
                             ast::SortKey::Simple(expr) => {
-                                expression_algebrizer.algebrize_expression(expr, false)
+                                expression_algebrizer.algebrize_expression(expr)
                             }
                             ast::SortKey::Positional(_) => panic!(
                                 "positional sort keys should have been rewritten to references"
@@ -1257,9 +1340,13 @@ impl<'a> Algebrizer<'a> {
         let grouped = match ast_node {
             None => source,
             Some(ast_expr) => {
-                let expression_algebrizer = self.clone().with_merged_mappings(
-                    source.schema(&self.schema_inference_state())?.schema_env,
-                )?;
+                let expression_algebrizer = self
+                    .with_merged_mappings(
+                        source.schema(&self.schema_inference_state())?.schema_env,
+                    )?
+                    // We should not algebrize the group key exprs in an implicit type conversion
+                    // context since there is no specific type expected for these values.
+                    .with_implicit_type_conversion_ctx(false);
 
                 let mut group_clause_aliases = UniqueLinkedHashMap::new();
                 let keys = ast_expr
@@ -1272,12 +1359,11 @@ impl<'a> Algebrizer<'a> {
                                 .map_err(|e| Error::DuplicateDocumentKey(e.get_key_name()))?;
                             Ok(mir::OptionallyAliasedExpr::Aliased(mir::AliasedExpr {
                                 alias: ast_key.alias,
-                                expr: expression_algebrizer
-                                    .algebrize_expression(ast_key.expr, false)?,
+                                expr: expression_algebrizer.algebrize_expression(ast_key.expr)?,
                             }))
                         }
                         ast::OptionallyAliasedExpr::Unaliased(expr) => expression_algebrizer
-                            .algebrize_expression(expr, false)
+                            .algebrize_expression(expr)
                             .map(mir::OptionallyAliasedExpr::Unaliased),
                     })
                     .collect::<Result<_>>()?;
@@ -1336,7 +1422,7 @@ impl<'a> Algebrizer<'a> {
                 let arg = if ve.len() != 1 {
                     return Err(Error::AggregationFunctionMustHaveOneArgument);
                 } else {
-                    self.algebrize_expression(ve[0].clone(), false)?
+                    self.algebrize_expression(ve[0].clone())?
                 };
                 mir::AggregationExpr::Function(mir::AggregationFunctionApplication {
                     function: mir::AggregationFunction::try_from(function)?,
@@ -1352,26 +1438,23 @@ impl<'a> Algebrizer<'a> {
         Ok(mir_node)
     }
 
-    pub fn algebrize_expression(
-        &self,
-        ast_node: ast::Expression,
-        in_implicit_type_conversion_context: bool,
-    ) -> Result<mir::Expression> {
+    /// Algebrizes an `ast::Expression` node into a `mir::Expression` node. Callers must ensure
+    /// that the `Algebrizer`'s `expression_context` is set correctly for the given context of the
+    /// `ast_node` being algebrized.
+    pub fn algebrize_expression(&self, ast_node: ast::Expression) -> Result<mir::Expression> {
         match ast_node {
             ast::Expression::Literal(l) => Ok(mir::Expression::Literal(self.algebrize_literal(l))),
-            ast::Expression::StringConstructor(s) => {
-                Ok(self.algebrize_string_constructor(s, in_implicit_type_conversion_context))
-            }
+            ast::Expression::StringConstructor(s) => Ok(self.algebrize_string_constructor(s)),
             ast::Expression::Array(a) => Ok(mir::Expression::Array(
                 a.into_iter()
-                    .map(|e| self.algebrize_expression(e, false))
+                    .map(|e| self.algebrize_expression(e))
                     .collect::<Result<Vec<mir::Expression>>>()?
                     .into(),
             )),
             ast::Expression::Document(d) => Ok(mir::Expression::Document({
                 let algebrized = d
                     .into_iter()
-                    .map(|kv| Ok((kv.key, self.algebrize_expression(kv.value, false)?)))
+                    .map(|kv| Ok((kv.key, self.algebrize_expression(kv.value)?)))
                     .collect::<Result<Vec<_>>>()?;
                 let mut out = UniqueLinkedHashMap::new();
                 out.insert_many(algebrized.into_iter())
@@ -1380,7 +1463,7 @@ impl<'a> Algebrizer<'a> {
             })),
             // If we ever see Identifier in algebrize_expression it must be an unqualified
             // reference, because we do not recurse on the expr field of Subpath if it is an
-            // Identifier
+            // Identifier. It may also be a Variable, which is determined by the ExpressionContext.
             ast::Expression::Identifier(i) => self.algebrize_unqualified_identifier(i),
             ast::Expression::Subpath(s) => self.algebrize_subpath(s),
             ast::Expression::Unary(u) => self.algebrize_unary_expr(u),
@@ -1398,11 +1481,7 @@ impl<'a> Algebrizer<'a> {
             ast::Expression::Like(l) => self.algebrize_like(l),
             ast::Expression::Tuple(a) => Ok(mir::Expression::Array(
                 a.into_iter()
-                    // Passes in_implicit_type_conversion_context to each element so that
-                    // algebrize_in_operands can drive ITC for all-StringConstructor Tuples
-                    // via its (false, true) arm. Reverting this to hardcode `false` would
-                    // silently break ITC for `field IN ('{"$date":"..."}', ...)`.
-                    .map(|e| self.algebrize_expression(e, in_implicit_type_conversion_context))
+                    .map(|e| self.algebrize_expression(e))
                     .collect::<Result<Vec<mir::Expression>>>()?
                     .into(),
             )),
@@ -1423,13 +1502,9 @@ impl<'a> Algebrizer<'a> {
         }
     }
 
-    pub fn algebrize_string_constructor(
-        &self,
-        s: String,
-        in_implicit_type_conversion_context: bool,
-    ) -> mir::Expression {
+    pub fn algebrize_string_constructor(&self, s: String) -> mir::Expression {
         // treat the string as a literal if we are not in a context where we want to implicitly cast
-        if !in_implicit_type_conversion_context {
+        if !self.expression_context.in_implicit_type_conversion_ctx {
             return mir::Expression::Literal(mir::LiteralValue::String(s));
         }
 
@@ -1491,7 +1566,8 @@ impl<'a> Algebrizer<'a> {
         &self,
         non_literal: ast::Expression,
     ) -> Result<(mir::Expression, bool)> {
-        let non_literal = self.algebrize_expression(non_literal, false)?;
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(false);
+        let non_literal = expr_algebrizer.algebrize_expression(non_literal)?;
         let non_literal_schema = non_literal.schema(&self.schema_inference_state())?;
         let is_nullable_string =
             non_literal_schema.satisfies(&STRING_OR_NULLISH) == Satisfaction::Must;
@@ -1502,7 +1578,7 @@ impl<'a> Algebrizer<'a> {
     /// This is a helper function for algebrizing binary comparison operands when one is a
     /// StringConstructor (literal) and one is not (non_literal). The non_literal is algebrized
     /// first. If its schema MUST satisfy STRING_OR_NULLISH, then the literal is algebrized with
-    /// in_implicit_type_conversion_context set to false because that means a String is expected;
+    /// in_implicit_type_conversion_ctx set to false because that means a String is expected;
     /// otherwise, it is algebrized with that value set to true.
     ///
     /// - "itc" stands for "implicit type conversion".
@@ -1516,8 +1592,9 @@ impl<'a> Algebrizer<'a> {
             self.algebrize_non_literal_itc_operand(non_literal)?;
 
         // Again, if is_nullable_string is true, that means we _do_ expect the StringConstructor
-        // to be a String value, so we set in_implicit_type_conversion_context to false.
-        let literal = self.algebrize_expression(literal, !is_nullable_string)?;
+        // to be a String value, so we set in_implicit_type_conversion_ctx to false.
+        let literal_algebrizer = self.with_implicit_type_conversion_ctx(!is_nullable_string);
+        let literal = literal_algebrizer.algebrize_expression(literal)?;
 
         Ok((literal, non_literal))
     }
@@ -1528,7 +1605,7 @@ impl<'a> Algebrizer<'a> {
     /// determines if exactly one of the operands is a StringConstructor and
     /// dispatches to algebrize_itc_eligible_binary_comparison_operands if
     /// that is the case. Otherwise, this function algebrizes both operands
-    /// with in_implicit_type_conversion_context set to false. This is because
+    /// with in_implicit_type_conversion_ctx set to false. This is because
     /// if both are StringConstructors, we can leave them both as String values,
     /// and if neither are StringConstructors, there is nothing to convert.
     fn algebrize_binary_comparison_operands(
@@ -1536,13 +1613,14 @@ impl<'a> Algebrizer<'a> {
         left: ast::Expression,
         right: ast::Expression,
     ) -> Result<(mir::Expression, mir::Expression)> {
+        let non_itc_algebrizer = self.with_implicit_type_conversion_ctx(false);
         match (left, right) {
             (
                 l @ ast::Expression::StringConstructor(_),
                 r @ ast::Expression::StringConstructor(_),
             ) => Ok((
-                self.algebrize_expression(l, false)?,
-                self.algebrize_expression(r, false)?,
+                non_itc_algebrizer.algebrize_expression(l)?,
+                non_itc_algebrizer.algebrize_expression(r)?,
             )),
             (literal @ ast::Expression::StringConstructor(_), non_literal) => {
                 let (literal, non_literal) =
@@ -1555,8 +1633,8 @@ impl<'a> Algebrizer<'a> {
                 Ok((non_literal, literal))
             }
             (l, r) => Ok((
-                self.algebrize_expression(l, false)?,
-                self.algebrize_expression(r, false)?,
+                non_itc_algebrizer.algebrize_expression(l)?,
+                non_itc_algebrizer.algebrize_expression(r)?,
             )),
         }
     }
@@ -1566,7 +1644,7 @@ impl<'a> Algebrizer<'a> {
     /// Mirrors [`Self::algebrize_binary_comparison_operands`] but handles the fact that the RHS
     /// is an [`ast::Expression::Tuple`] containing multiple elements rather than a single
     /// expression. If exactly any side contains a [`ast::Expression::StringConstructor`]
-    /// node, those strings are algebrized with `in_implicit_type_conversion_context = true`
+    /// node, those strings are algebrized with `in_implicit_type_conversion_ctx = true`
     /// so that extended-JSON strings (e.g. `'{"$date":"2020-01-01"}'`) are converted to the
     /// corresponding BSON values. If both or neither side consists of string constructors,
     /// both operands are algebrized with the flag set to `false`.
@@ -1579,6 +1657,9 @@ impl<'a> Algebrizer<'a> {
         left: ast::Expression,
         right: ast::Expression,
     ) -> Result<(mir::Expression, mir::Expression)> {
+        let itc_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let non_itc_algebrizer = self.with_implicit_type_conversion_ctx(false);
+
         // 1. Check if all the elements of the right expression are StringConstructors.
         let are_any_array_elements_string_constructors = match &right {
             ast::Expression::Tuple(arr) => arr
@@ -1595,31 +1676,31 @@ impl<'a> Algebrizer<'a> {
         ) {
             // Both sides are string constructors, or neither is — no conversion needed.
             (true, true) | (false, false) => Ok((
-                self.algebrize_expression(left, false)?,
-                self.algebrize_expression(right, false)?,
+                non_itc_algebrizer.algebrize_expression(left)?,
+                non_itc_algebrizer.algebrize_expression(right)?,
             )),
-            // LHS is a StringConstructor; RHS Tuple does not have any string constructors among its elements
+            // LHS is a StringConstructor; RHS Tuple does not have any string constructors among its
+            // elements
             (true, false) => {
                 Ok((
-                    // Because the left is a StringConstructor, we algebrize with ITC to convert it to the right value
-                    self.algebrize_expression(left, true)?,
-                    // Because none of the elements in the RHS are StringConstructors, we can safely algebrize the entire RHS with in_implicit_type_conversion_context set to false.
-                    self.algebrize_expression(right, false)?,
+                    // Because the left is a StringConstructor, we algebrize with ITC to convert it
+                    // to the right value
+                    itc_algebrizer.algebrize_expression(left)?,
+                    // Because none of the elements in the RHS are StringConstructors, we can safely
+                    // algebrize the entire RHS with in_implicit_type_conversion_ctx set to false.
+                    non_itc_algebrizer.algebrize_expression(right)?,
                 ))
             }
             // LHS is not a string constructor, RHS has some elements that StringConstructors
-            // We algebrize the LHS with in_implicit_context false, and then algebrize each element in the RHS.
+            // We algebrize the LHS with in_implicit_context false, and then algebrize each element
+            // in the RHS in an ITC context.
             (false, true) => {
                 let rhs_algebrized_per_element = match right {
                     ast::Expression::Tuple(elements) => {
                         let mut algebrized_elements = Vec::new();
                         for element in elements {
-                            let algebrized_element = match element {
-                                ast::Expression::StringConstructor(_) => {
-                                    self.algebrize_expression(element, true)?
-                                }
-                                _ => self.algebrize_expression(element, false)?,
-                            };
+                            let algebrized_element =
+                                itc_algebrizer.algebrize_expression(element)?;
 
                             algebrized_elements.push(algebrized_element);
                         }
@@ -1629,7 +1710,7 @@ impl<'a> Algebrizer<'a> {
                 };
 
                 Ok((
-                    self.algebrize_expression(left, false)?,
+                    non_itc_algebrizer.algebrize_expression(left)?,
                     mir::Expression::Array(ArrayExpr {
                         array: rhs_algebrized_per_element,
                     }),
@@ -1643,6 +1724,12 @@ impl<'a> Algebrizer<'a> {
             return Err(Error::DistinctScalarFunction);
         }
 
+        // Create an algebrizer that will algebrize expressions in an implicit type conversion
+        // context when necessary (i.e. when the operator expects non-String operands), and one
+        // that will not.
+        let itc_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let non_itc_algebrizer = self.with_implicit_type_conversion_ctx(false);
+
         // get the arguments as a vec of ast::Expressions. If the arguments are
         // Star this must be a COUNT function, otherwise it is an error.
         let args = match f.clone().args {
@@ -1650,8 +1737,9 @@ impl<'a> Algebrizer<'a> {
             ast::FunctionArguments::Args(ve) => ve,
         };
 
-        // When algebrizing function arguments below, we set in_implicit_type_conversion_context to true whenever a String argument is unexpected,
-        // and false wherever a String argument is expected.
+        // When algebrizing function arguments below, we set in_implicit_type_conversion_ctx
+        // to true whenever a String argument is unexpected, and false wherever a String argument
+        // is expected.
         let args = match (f.function, args.len()) {
             // if the function is CURRENT_TIMESTAMP with exactly one arg,
             // throw away the argument. we break the spec intentionally
@@ -1679,16 +1767,22 @@ impl<'a> Algebrizer<'a> {
             | (ast::FunctionName::Round, _)
             | (ast::FunctionName::DayOfWeek, _) => args
                 .into_iter()
-                .map(|e| self.algebrize_expression(e, true))
+                // These functions do not expect String arguments, so we use the ITC algebrizer
+                // which will convert StringConstructors to their corresponding BSON values.
+                .map(|e| itc_algebrizer.algebrize_expression(e))
                 .collect::<Result<Vec<_>>>()?,
             (ast::FunctionName::Split, 3) => {
                 let [string, delimiter, token_number]: [ast::Expression; 3] = args
                     .try_into()
                     .expect("Could not unpack args for ast Split function");
                 vec![
-                    self.algebrize_expression(string, false)?,
-                    self.algebrize_expression(delimiter, false)?,
-                    self.algebrize_expression(token_number, true)?,
+                    // `string` and `delimiter` are expected to be String values so we do not
+                    // algebrize in an ITC context.
+                    non_itc_algebrizer.algebrize_expression(string)?,
+                    non_itc_algebrizer.algebrize_expression(delimiter)?,
+                    // `token_number` is not expected to be a String so we algebrize in an ITC
+                    // context.
+                    itc_algebrizer.algebrize_expression(token_number)?,
                 ]
             }
             (ast::FunctionName::Substring, 3) => {
@@ -1696,9 +1790,13 @@ impl<'a> Algebrizer<'a> {
                     .try_into()
                     .expect("Could not unpack args for ast Substring function");
                 vec![
-                    self.algebrize_expression(string, false)?,
-                    self.algebrize_expression(start, true)?,
-                    self.algebrize_expression(length, true)?,
+                    // `string` is expected to be a String value so we do not algebrize in an ITC
+                    // context.
+                    non_itc_algebrizer.algebrize_expression(string)?,
+                    // `start` and `length` are not expected to be String values so we algebrize in
+                    // an ITC context.
+                    itc_algebrizer.algebrize_expression(start)?,
+                    itc_algebrizer.algebrize_expression(length)?,
                 ]
             }
             (ast::FunctionName::NullIf, 2) => {
@@ -1719,7 +1817,9 @@ impl<'a> Algebrizer<'a> {
             | (ast::FunctionName::Replace, _)
             | (ast::FunctionName::Upper, _) => args
                 .into_iter()
-                .map(|e| self.algebrize_expression(e, false))
+                // These functions expect String arguments, so we use the non-ITC algebrizer which
+                // will not convert StringConstructors.
+                .map(|e| non_itc_algebrizer.algebrize_expression(e))
                 .collect::<Result<Vec<_>>>()?,
             // the following patterns should not be hit due to rewrites; throw an error for aggregation functions
             // to indicate programmer error, otherwise panic
@@ -1771,7 +1871,10 @@ impl<'a> Algebrizer<'a> {
     }
 
     fn algebrize_unary_expr(&self, u: ast::UnaryExpr) -> Result<mir::Expression> {
-        let arg = self.algebrize_expression(*u.expr, true)?;
+        // None of the UnaryOp operators expect String operands, so we algebrize their operands in
+        // an implicit type conversion context.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let arg = expr_algebrizer.algebrize_expression(*u.expr)?;
         let args = vec![arg];
         Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
@@ -1796,30 +1899,39 @@ impl<'a> Algebrizer<'a> {
     fn algebrize_binary_expr(&self, b: ast::BinaryExpr) -> Result<mir::Expression> {
         use crate::ast::BinaryOp::*;
 
+        // Create an algebrizer that will algebrize expressions in an implicit type conversion
+        // context when necessary (i.e. when the operator expects non-String operands), and one
+        // that will not.
+        let itc_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let non_itc_algebrizer = self.with_implicit_type_conversion_ctx(false);
+
         // First, we must determine if the left and right operands each need to
         // be algebrized in an implicit type conversion context (this is done
-        // by toggling the bool argument to aglebrize_expression). The different
+        // by toggling the bool argument to algebrize_expression). The different
         // cases are detailed below.
         let (mut left, mut right) = match b.op {
-            // Add, And, Div, Mul, Or, and Sub do not expect String operands,
-            // therefore we algebrize their left and right operands with true.
-            // This means we _should_ attempt to implicitly convert any
-            // StringConstructors into different literal types.
+            // Add, And, Div, Mul, Or, and Sub do not expect String operands, therefore we algebrize
+            // their left and right operands with the ITC algebrizer. This means we _should_ attempt
+            // to implicitly convert any StringConstructors into different literal types.
             Add | And | Div | Mul | Or | Sub => (
-                self.algebrize_expression(*b.left, true)?,
-                self.algebrize_expression(*b.right, true)?,
+                itc_algebrizer.algebrize_expression(*b.left)?,
+                itc_algebrizer.algebrize_expression(*b.right)?,
             ),
 
-            // Concat expects String operands, therefore we algebrize its left
-            // and right operands with false. This means we should not attempt
-            // to convert any StringConstructors into different literal types.
+            // Concat expects String operands, therefore we algebrize its left and right operands
+            // with the non-ITC algebrizer. This means we should not attempt to convert any
+            // StringConstructors into different literal types.
             Concat => (
-                self.algebrize_expression(*b.left, false)?,
-                self.algebrize_expression(*b.right, false)?,
+                non_itc_algebrizer.algebrize_expression(*b.left)?,
+                non_itc_algebrizer.algebrize_expression(*b.right)?,
             ),
 
+            // algebrize_binary_comparison_operands handles implicit type conversion context
+            // sensitivity based on the operand types.
             Comparison(_) => self.algebrize_binary_comparison_operands(*b.left, *b.right)?,
 
+            // algebrize_in_operands handles implicit type conversion context sensitivity based on
+            // the operand types.
             In | NotIn => self.algebrize_in_operands(*b.left, *b.right)?,
         };
 
@@ -1901,28 +2013,38 @@ impl<'a> Algebrizer<'a> {
     }
 
     fn algebrize_is(&self, ast_node: ast::IsExpr) -> Result<mir::Expression> {
+        // `IS` is an interesting case: the operand is not expected to be any particular type, so
+        // typically we should prefer not to implicitly convert it. However, if the target type is
+        // NOT String, then we know that the expr is not expected to be a String, so we algebrize it
+        // in an implicit type conversion context. This could be useful for experimental queries
+        // such as `'{"$numberIn": "1"}' IS INT`.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(
+            ast_node.target_type != ast::TypeOrMissing::Type(ast::Type::String),
+        );
         Ok(mir::Expression::Is(mir::IsExpr {
-            expr: Box::new(self.algebrize_expression(*ast_node.expr, true)?),
+            expr: Box::new(expr_algebrizer.algebrize_expression(*ast_node.expr)?),
             target_type: mir::TypeOrMissing::try_from(ast_node.target_type)?,
         }))
     }
 
     fn algebrize_like(&self, ast_node: ast::LikeExpr) -> Result<mir::Expression> {
+        // LIKE expects String operands, therefore we algebrize its left and right operands in a
+        // non-ITC context.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(false);
         Ok(mir::Expression::Like(mir::LikeExpr {
-            expr: Box::new(self.algebrize_expression(*ast_node.expr, false)?),
-            pattern: Box::new(self.algebrize_expression(*ast_node.pattern, false)?),
+            expr: Box::new(expr_algebrizer.algebrize_expression(*ast_node.expr)?),
+            pattern: Box::new(expr_algebrizer.algebrize_expression(*ast_node.pattern)?),
             escape: ast_node.escape,
         }))
     }
 
     fn algebrize_between(&self, b: ast::BetweenExpr) -> Result<mir::Expression> {
         // First, we must determine if the arguments need to be algebrized in an
-        // implicit type conversion context (this is done by toggling the bool
-        // argument to algebrize_expression). We do this in two steps. First, we
+        // implicit type conversion context. We do this in two steps. First, we
         // algebrize the non-StringConstructor arguments and determine if all of
         // their schema MUST satisfy STRING_OR_NULLISH. Then, we algebrize any
         // StringConstructor operands using that information. If all non-literal
-        // operand schema MUST be nullable Strings, we are not in an implicit
+        // operand schema MUST satisfy nullable String, we are not in an implicit
         // type conversion context (because Strings are expected); otherwise, we
         // are.
         let mut non_literals_are_nullable_strings = true;
@@ -1972,17 +2094,12 @@ impl<'a> Algebrizer<'a> {
         // Again, if non_literals_are_nullable_strings is true, that means we
         // _do_ expect any StringConstructors to be String values, so we set
         // in_implicit_type_conversion_context to false.
-        let in_implicit_type_conversion_context = !non_literals_are_nullable_strings;
+        let expr_algebrizer =
+            self.with_implicit_type_conversion_ctx(!non_literals_are_nullable_strings);
         let args = vec![
-            arg.unwrap_or(
-                self.algebrize_string_constructor(arg_lit, in_implicit_type_conversion_context),
-            ),
-            min.unwrap_or(
-                self.algebrize_string_constructor(min_lit, in_implicit_type_conversion_context),
-            ),
-            max.unwrap_or(
-                self.algebrize_string_constructor(max_lit, in_implicit_type_conversion_context),
-            ),
+            arg.unwrap_or(expr_algebrizer.algebrize_string_constructor(arg_lit)),
+            min.unwrap_or(expr_algebrizer.algebrize_string_constructor(min_lit)),
+            max.unwrap_or(expr_algebrizer.algebrize_string_constructor(max_lit)),
         ];
 
         let function = mir::ScalarFunction::Between;
@@ -1997,14 +2114,16 @@ impl<'a> Algebrizer<'a> {
     }
 
     fn algebrize_trim(&self, t: ast::TrimExpr) -> Result<mir::Expression> {
+        // TRIM expects String operands, therefore we algebrize its operands in a non-ITC context.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(false);
         let function = match t.trim_spec {
             ast::TrimSpec::Leading => mir::ScalarFunction::LTrim,
             ast::TrimSpec::Trailing => mir::ScalarFunction::RTrim,
             ast::TrimSpec::Both => mir::ScalarFunction::BTrim,
         };
         let args = vec![
-            self.algebrize_expression(*t.trim_chars, false)?,
-            self.algebrize_expression(*t.arg, false)?,
+            expr_algebrizer.algebrize_expression(*t.trim_chars)?,
+            expr_algebrizer.algebrize_expression(*t.arg)?,
         ];
         Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
@@ -2032,7 +2151,10 @@ impl<'a> Algebrizer<'a> {
             IsoWeekday => mir::ScalarFunction::IsoWeekday,
             Quarter => panic!("'Quarter' is not a supported date part for EXTRACT"),
         };
-        let args = vec![self.algebrize_expression(*e.arg, true)?];
+
+        // EXTRACT expects a datetime operand, therefore we algebrize its operand in an ITC context.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let args = vec![expr_algebrizer.algebrize_expression(*e.arg)?];
         let is_nullable = Self::args_are_nullable(&args);
         Ok(mir::Expression::ScalarFunction(
             mir::ScalarFunctionApplication {
@@ -2068,10 +2190,12 @@ impl<'a> Algebrizer<'a> {
             }
         };
 
+        // Date functions expect non-String operands, therefore we algebrize them in an ITC context.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(true);
         let args = d
             .args
             .into_iter()
-            .map(|e| self.algebrize_expression(e, true))
+            .map(|e| expr_algebrizer.algebrize_expression(e))
             .collect::<Result<Vec<_>>>()?;
 
         // All date functions are nullable
@@ -2088,33 +2212,46 @@ impl<'a> Algebrizer<'a> {
     }
 
     fn algebrize_access(&self, a: ast::AccessExpr) -> Result<mir::Expression> {
-        let expr = self.algebrize_expression(*a.expr, true)?;
+        // The `expr` of an AccessExpr is algebrized in an implicit type conversion context since a
+        // String is unexpected in this position.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let expr = expr_algebrizer.algebrize_expression(*a.expr)?;
         Ok(match *a.subfield {
             ast::Expression::StringConstructor(s) => self.construct_field_access_expr(expr, s)?,
             sf => mir::Expression::ScalarFunction(mir::ScalarFunctionApplication::new(
                 mir::ScalarFunction::ComputedFieldAccess,
-                vec![expr, self.algebrize_expression(sf, false)?],
+                vec![
+                    expr,
+                    // Since this expression is certainly not a StringConstructor, we can just use
+                    // `self` to algebrize it since the implicit type conversion context does not
+                    // matter.
+                    self.algebrize_expression(sf)?,
+                ],
             )),
         })
     }
 
     fn algebrize_type_assertion(&self, t: ast::TypeAssertionExpr) -> Result<mir::Expression> {
-        // If the target_type is String, we do not implicitly convert the
-        // expr since it is being asserted as a String. Otherwise, we do
-        // attempt to convert.
+        // If the target_type is String, we do not implicitly convert the expr since it is being
+        // asserted as a String. Otherwise, we do attempt to convert.
+        let expr_algebrizer =
+            self.with_implicit_type_conversion_ctx(t.target_type != ast::Type::String);
         Ok(mir::Expression::TypeAssertion(mir::TypeAssertionExpr {
-            expr: Box::new(self.algebrize_expression(*t.expr, t.target_type != ast::Type::String)?),
+            expr: Box::new(expr_algebrizer.algebrize_expression(*t.expr)?),
             target_type: mir::Type::try_from(t.target_type)?,
         }))
     }
 
     fn algebrize_case(&self, c: ast::CaseExpr) -> Result<mir::Expression> {
-        // if we don't have an else branch, the resulting case expression _is_ nullable; otherwise, we will
-        // check the then and else expressions to determine nullability
+        let itc_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let non_itc_algebrizer = self.with_implicit_type_conversion_ctx(false);
+
+        // if we don't have an else branch, the resulting case expression _is_ nullable; otherwise,
+        // we will check the then and else expressions to determine nullability
         let mut is_nullable = c.else_branch.is_none();
         let else_branch = c
             .else_branch
-            .map(|e| self.algebrize_expression(*e, false))
+            .map(|e| non_itc_algebrizer.algebrize_expression(*e))
             .transpose()?
             .inspect(|expr| {
                 is_nullable = is_nullable
@@ -2124,16 +2261,16 @@ impl<'a> Algebrizer<'a> {
             .map(Box::new)
             .unwrap_or_else(|| Box::new(mir::Expression::Literal(mir::LiteralValue::Null)));
 
-        // algebrize the when branches without implicit casting, keeping track of the schema of all of the when expressions
-        // to inform how we algebrize the expr
+        // algebrize the `when` branches without implicit casting, keeping track of the schema of
+        // all the `when` expressions to inform how we algebrize the expr
         let mut when_branches_all_strings = true;
         let mut when_branch: Vec<mir::WhenBranch> = c
             .when_branch
             .clone()
             .into_iter()
             .map(|wb| {
-                let when = self.algebrize_expression(*wb.when, false)?;
-                let then = self.algebrize_expression(*wb.then, false)?;
+                let when = non_itc_algebrizer.algebrize_expression(*wb.when)?;
+                let then = non_itc_algebrizer.algebrize_expression(*wb.then)?;
                 let then_is_nullable = NULLISH
                     .satisfies(&then.schema(&self.schema_inference_state()).unwrap())
                     != Satisfaction::Not;
@@ -2151,15 +2288,19 @@ impl<'a> Algebrizer<'a> {
             })
             .collect::<Result<_>>()?;
 
-        // if all of the when branches have string schemas, we should not implicitly convert our expr if we have one, so that they may
-        // be compared directly. Otherwise, we algebrize the expr with implicit type conversion
+        // if all the `when` branches have string schemas, we should not implicitly convert our
+        // expr if we have one, so that they may be compared directly. Otherwise, we algebrize the
+        // expr in an implicit type conversion context.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(!when_branches_all_strings);
         let expr = c
             .expr
-            .map(|e| self.algebrize_expression(*e, !when_branches_all_strings))
+            .map(|e| expr_algebrizer.algebrize_expression(*e))
             .transpose()?;
 
-        // if the expr exists and MUST satisfy string, we can use the previously algebrized when_branch without implicit type conversion;
-        // otherwise, we should re-algebrize with implicit type conversion for comparison with non-string expressions (SimpleCase), or for SearchedCase
+        // if the expr exists and MUST satisfy string, we can use the previously algebrized
+        // when_branch without implicit type conversion; otherwise, we should re-algebrize with
+        // implicit type conversion for comparison with non-string expressions (SimpleCase), or for
+        // SearchedCase
         let expr_schema = expr.as_ref().map(|e| {
             e.schema(&self.schema_inference_state())
                 .unwrap_or(schema::Schema::Unsat)
@@ -2172,8 +2313,8 @@ impl<'a> Algebrizer<'a> {
                 .when_branch
                 .into_iter()
                 .map(|wb| {
-                    let when = self.algebrize_expression(*wb.when, true)?;
-                    let then = self.algebrize_expression(*wb.then, false)?;
+                    let when = itc_algebrizer.algebrize_expression(*wb.when)?;
+                    let then = non_itc_algebrizer.algebrize_expression(*wb.then)?;
                     Ok(mir::WhenBranch {
                         is_nullable: NULLISH
                             .satisfies(&then.schema(&self.schema_inference_state())?)
@@ -2211,6 +2352,9 @@ impl<'a> Algebrizer<'a> {
             }};
         }
 
+        let itc_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let non_itc_algebrizer = self.with_implicit_type_conversion_ctx(false);
+
         match c.to {
             BinData | DbPointer | Javascript | JavascriptWithScope | MaxKey | MinKey
             | RegularExpression | Symbol | Timestamp | Undefined | Date | Time => {
@@ -2218,11 +2362,17 @@ impl<'a> Algebrizer<'a> {
             }
             Array | Boolean | Datetime | Decimal128 | Document | Double | Int32 | Int64 | Null
             | ObjectId | String => {
-                let expr = self.algebrize_expression(*c.expr, true)?;
-                let on_null =
-                    self.algebrize_expression(*(c.on_null.unwrap_or_else(|| null_expr!())), false)?;
-                let on_error = self
-                    .algebrize_expression(*(c.on_error.unwrap_or_else(|| null_expr!())), false)?;
+                // MongoDB does not natively support casting extended-JSON encoded strings to their
+                // underlying type via `$convert` (which is the translation of `CAST`). Therefore,
+                // we algebrize the expr in an ITC context in case it is a StringConstructor that
+                // is formatted in extended-JSON.
+                let expr = itc_algebrizer.algebrize_expression(*c.expr)?;
+                // on_null and on_error do not have expected types, so we do not algebrize them in
+                // an ITC context.
+                let on_null = non_itc_algebrizer
+                    .algebrize_expression(*(c.on_null.unwrap_or_else(|| null_expr!())))?;
+                let on_error = non_itc_algebrizer
+                    .algebrize_expression(*(c.on_error.unwrap_or_else(|| null_expr!())))?;
                 let is_nullable =
                     expr.is_nullable() || on_error.is_nullable() || on_null.is_nullable();
                 Ok(mir::Expression::Cast(mir::CastExpr {
@@ -2290,12 +2440,13 @@ impl<'a> Algebrizer<'a> {
         let (subquery_expr, subquery_schema) = self.algebrize_subquery_expr(*s.subquery)?;
 
         // If the schema of the subquery output field MUST satisfy STRING_OR_NULLISH,
-        // then we algebrize s.expr with in_implicit_type_conversion_context set to
-        // false because that means a String is expected. Otherwise, it is algebrized
-        // with that value set to true.
+        // then we algebrize s.expr with in_implicit_type_conversion_ctx set to false
+        // because that means a String is expected. Otherwise, it is algebrized with
+        // that value set to true.
         let is_nullable_string =
             subquery_schema.satisfies(&STRING_OR_NULLISH) == Satisfaction::Must;
-        let argument = self.algebrize_expression(*s.expr, !is_nullable_string)?;
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(!is_nullable_string);
+        let argument = expr_algebrizer.algebrize_expression(*s.expr)?;
 
         // Determine the overall nullability of the subquery comparison expr.
         let arg_schema = argument.schema(&self.schema_inference_state())?;
@@ -2321,7 +2472,10 @@ impl<'a> Algebrizer<'a> {
         if let ast::Expression::Identifier(s) = *p.expr {
             return self.algebrize_possibly_qualified_field_access(s, p.subpath);
         }
-        let expr = self.algebrize_expression(*p.expr, true)?;
+        // The `expr` of a SubpathExpr is algebrized in an implicit type conversion context since a
+        // String is unexpected in this position.
+        let expr_algebrizer = self.with_implicit_type_conversion_ctx(true);
+        let expr = expr_algebrizer.algebrize_expression(*p.expr)?;
         let expr_schema = expr.schema(&self.schema_inference_state())?;
         let is_nullable = NULLISH.satisfies(&expr_schema) != Satisfaction::Not
             || expr_schema.contains_field(&p.subpath) != Satisfaction::Must;
@@ -2387,8 +2541,7 @@ impl<'a> Algebrizer<'a> {
             .collect::<Vec<_>>();
         // If there is no datasource containing the field, the field is not found.
         if i_containing_datasources.is_empty() {
-            let all_keys = self
-                .schema_env
+            let all_keys = (*self.schema_env)
                 .clone()
                 .into_iter()
                 .flat_map(|(_, s)| s.keys())

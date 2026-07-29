@@ -27,7 +27,7 @@ macro_rules! test_translate_expression_with_schema_info {
     ($func_name:ident, expected = $expected:expr, input = $input:expr, $(mapping_registry = $mapping_registry:expr,)? $(catalog = $catalog:expr,)? $(schema_env = $schema_env:expr,)?) => {
         #[test]
         fn $func_name() {
-            use crate::{translator, mapping_registry::MqlMappingRegistry, options::SqlOptions, catalog::Catalog, mir::schema::{SchemaCheckingMode, SchemaInferenceState}, schema::SchemaEnvironment};
+            use crate::{translator, map, mapping_registry::MqlMappingRegistry, options::SqlOptions, catalog::Catalog, mir::schema::{SchemaCheckingMode, SchemaInferenceState}, schema::SchemaEnvironment};
 
             // force the input
             let input = $input;
@@ -43,7 +43,7 @@ macro_rules! test_translate_expression_with_schema_info {
             let mut schema_env = SchemaEnvironment::default();
             $(schema_env = $schema_env;)?
 
-            let schema_inference_state = SchemaInferenceState::new(0u16, schema_env, &catalog, SchemaCheckingMode::default());
+            let schema_inference_state = SchemaInferenceState::new(0u16, schema_env, &catalog, map! {}, SchemaCheckingMode::default());
             let _ = input.schema(&schema_inference_state).unwrap();
             let translator = translator::MqlTranslator{
                 mapping_registry,
@@ -3993,7 +3993,7 @@ mod subquery {
 
 mod subquery_comparison {
     use crate::{
-        air, map,
+        air,
         mapping_registry::{MqlMappingRegistryValue, MqlReferenceType},
         mir::{self, binding_tuple::DatasourceName::Bottom, schema::SchemaCache},
         schema::{Atomic, Document, Schema, ANY_DOCUMENT},
@@ -4598,5 +4598,65 @@ mod in_operator {
             );
             mr
         },
+    );
+}
+
+mod higher_order_function {
+    use crate::{air, mir};
+
+    test_translate_expression!(
+        map,
+        expected = Ok(air::Expression::Map(air::Map {
+            input: Box::new(air::Expression::Array(vec![])),
+            as_name: None,
+            inside: Box::new(air::Expression::Literal(air::LiteralValue::Integer(12))),
+        })),
+        input = mir::Expression::HigherOrderFunction(mir::HigherOrderFunctionApplication::Map(
+            mir::MapExpr::new(
+                Box::new(mir::Expression::Array(mir::ArrayExpr { array: vec![] })),
+                Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(12))),
+            )
+        )),
+    );
+
+    test_translate_expression!(
+        filter,
+        expected = Ok(air::Expression::Filter(air::Filter {
+            input: Box::new(air::Expression::Array(vec![])),
+            as_name: None,
+            inside: Box::new(air::Expression::Literal(air::LiteralValue::Boolean(true))),
+        })),
+        input = mir::Expression::HigherOrderFunction(mir::HigherOrderFunctionApplication::Filter(
+            mir::FilterExpr::new(
+                Box::new(mir::Expression::Array(mir::ArrayExpr { array: vec![] })),
+                Box::new(mir::Expression::Literal(mir::LiteralValue::Boolean(true))),
+            )
+        )),
+    );
+
+    test_translate_expression!(
+        reduce,
+        expected = Ok(air::Expression::Reduce(air::Reduce {
+            input: Box::new(air::Expression::Array(vec![])),
+            init_value: Box::new(air::Expression::Literal(air::LiteralValue::Integer(1))),
+            inside: Box::new(air::Expression::Literal(air::LiteralValue::Integer(2))),
+        })),
+        input = mir::Expression::HigherOrderFunction(mir::HigherOrderFunctionApplication::Reduce(
+            mir::ReduceExpr::new(
+                Box::new(mir::Expression::Array(mir::ArrayExpr { array: vec![] })),
+                Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(1))),
+                Box::new(mir::Expression::Literal(mir::LiteralValue::Integer(2))),
+            )
+        )),
+    );
+}
+
+mod variable {
+    use crate::{air, mir};
+
+    test_translate_expression!(
+        simple,
+        expected = Ok(air::Expression::Variable("this".to_string().into())),
+        input = mir::Expression::Variable(mir::Variable::new("this".to_string())),
     );
 }
