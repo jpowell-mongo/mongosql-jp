@@ -341,3 +341,88 @@ test_prefilter_no_op! {
         cache: SchemaCache::new(),
     }),
 }
+
+// Prefiltering only applies directly above an Unwind. A MatchFilter over any other
+// source is rebuilt unchanged.
+test_prefilter_no_op! {
+    match_filter_over_non_unwind_source_is_noop,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Sentinel.into(),
+        condition: MatchQuery::Comparison(MatchLanguageComparison {
+            function: MatchLanguageComparisonOp::Eq,
+            input: Some(mir_field_path("foo", vec!["bar"])),
+            arg: Integer(42),
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}
+
+// An ElemMatch prefilter is built for exactly one field, so a condition that references
+// two distinct paths cannot be prefiltered. `foo.bar` alone would be prefilterable; the
+// second path is what makes this a no-op.
+test_prefilter_no_op! {
+    match_filter_multiple_field_uses_is_noop,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Unwind(Unwind {
+            source: Stage::Sentinel.into(),
+            path: mir_field_path("foo", vec!["bar"]),
+            index: Some("idx".to_string()),
+            outer: false,
+            cache: SchemaCache::new(),
+            is_prefiltered: false,
+        }).into(),
+        condition: MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::And,
+            args: vec![
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["bar"])),
+                    arg: Integer(42),
+                    cache: SchemaCache::new(),
+                }),
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["baz"])),
+                    arg: Integer(43),
+                    cache: SchemaCache::new(),
+                }),
+            ],
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}
+
+test_prefilter_no_op! {
+    match_filter_or_condition_is_noop,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Unwind(Unwind {
+            source: Stage::Sentinel.into(),
+            path: mir_field_path("foo", vec!["bar"]),
+            index: Some("idx".to_string()),
+            outer: false,
+            cache: SchemaCache::new(),
+            is_prefiltered: false,
+        }).into(),
+        condition: MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::Or,
+            args: vec![
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["bar"])),
+                    arg: Integer(42),
+                    cache: SchemaCache::new(),
+                }),
+                MatchQuery::Comparison(MatchLanguageComparison {
+                    function: MatchLanguageComparisonOp::Eq,
+                    input: Some(mir_field_path("foo", vec!["bar"])),
+                    arg: Integer(43),
+                    cache: SchemaCache::new(),
+                }),
+            ],
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}

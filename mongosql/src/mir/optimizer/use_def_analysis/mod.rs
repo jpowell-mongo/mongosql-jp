@@ -37,8 +37,8 @@ use mongosql_datastructures::binding_tuple::BindingTuple;
 use crate::{
     mir::{
         binding_tuple::Key, optimizer::util::insert_field_path_and_all_ancestors, visitor::Visitor,
-        ExistsExpr, Expression, FieldAccess, FieldPath, Filter, Group, MatchFilter, MqlStage,
-        Project, ReferenceExpr, Sort, Stage, SubqueryComparison, SubqueryExpr, Unwind,
+        ExistsExpr, Expression, FieldAccess, FieldPath, Filter, Group, MatchFilter, MatchQuery,
+        MqlStage, Project, ReferenceExpr, Sort, Stage, SubqueryComparison, SubqueryExpr, Unwind,
     },
     util::unique_linked_hash_map::UniqueLinkedHashMap,
 };
@@ -412,6 +412,14 @@ struct SubstituteVisitor {
     theta: HashMap<Key, Expression>,
     // Substitution can fail when trying to substitute a FieldPath
     failed: bool,
+    // When true, a FieldPath whose key is absent from theta is left unchanged (a no-op success)
+    // rather than failing. This mirrors how `visit_expression` treats an unbound `Reference`, and
+    // lets a MatchFilter bubble past stages with an empty theta (Unwind, Derived) the way an
+    // `$expr` Filter already does. It is left false for Sort, whose substitution must keep failing
+    // on a missing key: that failure is what prevents a Sort from reordering past a Filter or
+    // MatchFilter (which would otherwise loop forever, since `is_filter_filter_only_change` does
+    // not exempt Sort swaps).
+    noop_on_missing_key: bool,
 }
 
 impl Visitor for SubstituteVisitor {
@@ -428,67 +436,76 @@ impl Visitor for SubstituteVisitor {
     }
 
     fn visit_field_path(&mut self, mut node: FieldPath) -> FieldPath {
-        if let Some(rep) = self.theta.get(&node.key) {
-            if self.failed {
-                return node;
+        let Some(rep) = self.theta.get(&node.key) else {
+            // The path's key is not defined (renamed) by this source. For a MatchFilter
+            // (noop_on_missing_key), substitution is a no-op: leave the path unchanged,
+            // mirroring `visit_expression`'s handling of an unbound `Reference`, so it can
+            // bubble past empty-theta stages (Unwind, Derived). For a Sort, this must fail
+            // (see the field docs) to prevent reordering loops with Filter/MatchFilter.
+            if !self.noop_on_missing_key {
+                self.failed = true;
             }
-            let mut cur = rep;
-            // traverse through the fields to get to the proper place in the Document
-            // that is replacing the Key in this substitution
-            let mut field_idx = 0;
-            loop {
-                if node.fields.is_empty() {
-                    break;
-                }
-                let field = node.fields.get(field_idx);
-                match cur {
-                    // Each level of the Key substitution must be a Document, FieldAccess, or
-                    // Reference.
-                    Expression::Document(d) => {
-                        if let Some(next) = d.document.get(field.unwrap()) {
-                            cur = next;
-                            // since this was a Document, we need to remove addvance the field_idx
-                            // so that we can get the next field and so that this current field
-                            // will be omitted from the output, assuming this substitution
-                            // ultimately succeeds.
-                            field_idx += 1;
-                        } else {
-                            self.failed = true;
-                            return node;
-                        }
-                    }
-                    // If we hit a FieldAccess or Reference we end iteration and keep the remaining fields.
-                    // The remaining node.fields will be concatenated with the fields from this
-                    // FieldAccess, assuming it can be converted to a FieldPath, or the node.key will
-                    // just be replaced, if this is a Reference.
-                    Expression::FieldAccess(_) | Expression::Reference(_) => {
-                        break;
-                    }
-                    _ => {
+            return node;
+        };
+        if self.failed {
+            return node;
+        }
+        let mut cur = rep;
+        // traverse through the fields to get to the proper place in the Document
+        // that is replacing the Key in this substitution
+        let mut field_idx = 0;
+        loop {
+            if node.fields.is_empty() {
+                break;
+            }
+            let field = node.fields.get(field_idx);
+            match cur {
+                // Each level of the Key substitution must be a Document, FieldAccess, or
+                // Reference.
+                Expression::Document(d) => {
+                    if let Some(next) = d.document.get(field.unwrap()) {
+                        cur = next;
+                        // since this was a Document, we need to remove addvance the field_idx
+                        // so that we can get the next field and so that this current field
+                        // will be omitted from the output, assuming this substitution
+                        // ultimately succeeds.
+                        field_idx += 1;
+                    } else {
                         self.failed = true;
                         return node;
                     }
                 }
-            }
-            // If we are subbing in a Reference, we simply replace the FieldPath key with the Reference key.
-            if let Expression::Reference(r) = cur {
-                node.key = r.key.clone();
-                node.fields = node.fields.into_iter().skip(field_idx).collect();
-                return node;
-            }
-            // If we are subbing in a FieldAccess, it must be convertable to a FieldPath
-            // or this substitution has failed.
-            if let Expression::FieldAccess(fa) = cur {
-                let fp: Result<FieldPath, _> = fa.try_into();
-                if let Ok(fp) = fp {
-                    node.key = fp.key;
-                    node.fields = fp
-                        .fields
-                        .into_iter()
-                        .chain(node.fields.into_iter().skip(field_idx))
-                        .collect();
+                // If we hit a FieldAccess or Reference we end iteration and keep the remaining fields.
+                // The remaining node.fields will be concatenated with the fields from this
+                // FieldAccess, assuming it can be converted to a FieldPath, or the node.key will
+                // just be replaced, if this is a Reference.
+                Expression::FieldAccess(_) | Expression::Reference(_) => {
+                    break;
+                }
+                _ => {
+                    self.failed = true;
                     return node;
                 }
+            }
+        }
+        // If we are subbing in a Reference, we simply replace the FieldPath key with the Reference key.
+        if let Expression::Reference(r) = cur {
+            node.key = r.key.clone();
+            node.fields = node.fields.into_iter().skip(field_idx).collect();
+            return node;
+        }
+        // If we are subbing in a FieldAccess, it must be convertable to a FieldPath
+        // or this substitution has failed.
+        if let Expression::FieldAccess(fa) = cur {
+            let fp: Result<FieldPath, _> = fa.try_into();
+            if let Ok(fp) = fp {
+                node.key = fp.key;
+                node.fields = fp
+                    .fields
+                    .into_iter()
+                    .chain(node.fields.into_iter().skip(field_idx))
+                    .collect();
+                return node;
             }
         }
         self.failed = true;
@@ -506,6 +523,17 @@ impl Expression {
     }
 }
 
+impl MatchQuery {
+    // Mirrors Expression::field_uses, but drives the shared SingleStageFieldUseVisitor from a
+    // match condition. The generated walk descends into every FieldPath (each comparison `input`,
+    // ElemMatch `input`, and Logical args), so visit_field_path collects them all.
+    pub fn field_uses(self) -> (Option<HashSet<FieldPath>>, Self) {
+        let mut visitor = SingleStageFieldUseVisitor::default();
+        let ret = visitor.visit_match_query(self);
+        (visitor.field_uses, ret)
+    }
+}
+
 impl Project {
     pub fn datasource_uses(self) -> (HashSet<Key>, Project) {
         let mut visitor = SingleStageDatasourceUseVisitor::default();
@@ -517,6 +545,7 @@ impl Project {
         let mut visitor = SubstituteVisitor {
             theta,
             failed: false,
+            noop_on_missing_key: false,
         };
         let mut subbed_keys = BindingTuple::default();
         let mut failed = false;
@@ -550,6 +579,7 @@ impl Group {
         let mut visitor = SubstituteVisitor {
             theta,
             failed: false,
+            noop_on_missing_key: false,
         };
         let cloned_keys = self.keys.clone();
         let mut subbed_keys = Vec::new();
@@ -596,6 +626,7 @@ impl Stage {
         let mut visitor = SubstituteVisitor {
             theta,
             failed: false,
+            noop_on_missing_key: false,
         };
         // We only implement substitute for Stages we intend to move for which substitution makes
         // sense: Filter, Group, and Sort. Substitution is unneeded for Limit and Offset.
@@ -614,6 +645,11 @@ impl Stage {
                 Ok(Stage::Filter(f))
             }
             Stage::MqlIntrinsic(MqlStage::MatchFilter(mut f)) => {
+                // A MatchFilter's field references are unaffected by a source that does not
+                // rename their key, so treat a missing key as a no-op (like an `$expr` Filter)
+                // rather than a substitution failure. This lets it bubble past empty-theta
+                // stages such as Unwind and Derived.
+                visitor.noop_on_missing_key = true;
                 let subbed = visitor.visit_match_query(f.condition.clone());
                 if visitor.failed {
                     return Err(Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(f))));

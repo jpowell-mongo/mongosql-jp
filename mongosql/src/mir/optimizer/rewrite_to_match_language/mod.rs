@@ -10,12 +10,13 @@
 /// require a bit of finesse to ensure that {$match: {$expr: false}} is not
 /// treated as a COLLSCAN.
 ///
-/// Note that although comparison operators _can_ be rewritten to use match
-/// language, this optimization does not perform such rewrites. LIKE and IS
-/// ultimately translate to $regexMatch and $eq/$type in aggregation language.
-/// Neither of those can utilize indexes when used in $match stages. Comparison
-/// operators can utilize indexes even when they use expr language in $match.
-/// Therefore, this optimization is only concerned with rewriting LIKE and IS.
+/// Comparison operators (<, <=, <>, =, >, >=) are also rewritten to native
+/// match language when exactly one side is a plain field reference and the
+/// other side is a literal (see `rewrite_comparison`). Most operators are
+/// emitted bare because MQL comparisons are type-bracketed and so already
+/// exclude null and missing; `<>` over a nullable field is wrapped in a
+/// `{field: {$ne: null}}` existence guard, and a `NULL` literal operand is left
+/// in `$expr`. See `rewrite_comparison` for details.
 ///
 /// Also note, MatchSplitting should ensure we never have a conjunction at this
 /// point, however we choose to make this optimization work independent of that
@@ -61,10 +62,48 @@ struct MatchLanguageRewriterVisitor {
 }
 
 impl MatchLanguageRewriterVisitor {
+    /// Returns `true` if every component of `field_path` can be addressed by
+    /// native match language (find syntax), and `false` otherwise.
+    ///
+    /// Native match language addresses a field by using its name — possibly
+    /// dotted — as a document key, e.g. `{"a.b": {"$eq": 4}}` targets the field
+    /// `b` nested under `a`. It has no
+    /// `$getField` escape hatch, so a field whose *name* literally contains a
+    /// `.`, starts with `$`, or is the empty string cannot be expressed: the
+    /// `.` is interpreted as a path separator, and a leading `$` is parsed as an
+    /// operator.
+    ///
+    /// For example, the delimited SQL identifier `` `$a.b` `` (a single field
+    /// literally named `$a.b`) would rewrite to the match stage:
+    ///
+    /// ```json
+    /// { "$match": { "$a.b": { "$eq": 4 } } }
+    /// ```
+    ///
+    /// which MongoDB rejects at execution time:
+    ///
+    /// ```text
+    /// MongoServerError[BadValue]: unknown top level operator: $a.b. If you
+    /// have a field name that starts with a '$' symbol, consider using
+    /// $getField or $setField.
+    /// ```
+    ///
+    /// When this returns `false`, the expression is left to be translated to
+    /// `$expr` language so the existing `$getField`-based translation handles
+    /// the field correctly.
+    fn is_match_addressable(field_path: &FieldPath) -> bool {
+        field_path
+            .fields
+            .iter()
+            .all(|f| !(f.contains('.') || f.starts_with('$') || f.is_empty()))
+    }
+
     fn rewrite_is(is: IsExpr) -> Option<MatchQuery> {
         match *is.expr {
             Expression::FieldAccess(fa) => fa
                 .try_into()
+                .ok()
+                .filter(Self::is_match_addressable)
                 .map(|mp: FieldPath| {
                     if is.target_type == TypeOrMissing::Type(Type::Null) {
                         MatchQuery::Comparison(MatchLanguageComparison {
@@ -80,15 +119,14 @@ impl MatchLanguageRewriterVisitor {
                             cache: SchemaCache::new(),
                         })
                     }
-                })
-                .ok(),
+                }),
             _ => None,
         }
     }
 
     fn rewrite_like(like: LikeExpr) -> Option<MatchQuery> {
         let match_path = match *like.expr {
-            Expression::FieldAccess(fa) => fa.try_into().ok(),
+            Expression::FieldAccess(fa) => fa.try_into().ok().filter(Self::is_match_addressable),
             _ => return None,
         };
 
@@ -146,7 +184,11 @@ impl MatchLanguageRewriterVisitor {
         // Anything more complex — a function call, a subquery, a literal — cannot be
         // mapped to the FieldPath that MatchLanguageIn requires, so we bail early.
         let field_path: FieldPath = match sf.args.first()? {
-            Expression::FieldAccess(fa) => fa.clone().try_into().ok()?,
+            Expression::FieldAccess(fa) => fa
+                .clone()
+                .try_into()
+                .ok()
+                .filter(Self::is_match_addressable)?,
             _ => return None,
         };
 
@@ -186,24 +228,195 @@ impl MatchLanguageRewriterVisitor {
         }))
     }
 
+    /// Maps a SQL comparison [`ScalarFunction`] to its native match-language
+    /// counterpart. Returns `None` for any non-comparison function; callers
+    /// should only invoke this with one of the six comparison variants.
+    fn comparison_op(function: &ScalarFunction) -> Option<MatchLanguageComparisonOp> {
+        match function {
+            ScalarFunction::Lt => Some(MatchLanguageComparisonOp::Lt),
+            ScalarFunction::Lte => Some(MatchLanguageComparisonOp::Lte),
+            ScalarFunction::Neq => Some(MatchLanguageComparisonOp::Ne),
+            ScalarFunction::Eq => Some(MatchLanguageComparisonOp::Eq),
+            ScalarFunction::Gt => Some(MatchLanguageComparisonOp::Gt),
+            ScalarFunction::Gte => Some(MatchLanguageComparisonOp::Gte),
+            _ => None,
+        }
+    }
+
+    /// Commutes a [`MatchLanguageComparisonOp`] for the case where the literal
+    /// appeared on the left of the original SQL expression (e.g. `10 < x`).
+    /// Commuting swaps which side is "larger", so `Lt`/`Gt` and `Lte`/`Gte`
+    /// flip, while `Eq`/`Ne` are self-commutative.
+    fn commute(op: MatchLanguageComparisonOp) -> MatchLanguageComparisonOp {
+        use MatchLanguageComparisonOp::*;
+        match op {
+            Eq => Eq,
+            Ne => Ne,
+            Lt => Gt,
+            Lte => Gte,
+            Gt => Lt,
+            Gte => Lte,
+        }
+    }
+
+    /// Rewrites a binary comparison scalar function (`<`, `<=`, `<>`, `=`, `>`,
+    /// `>=`) to a native [`MatchQuery::Comparison`].
+    ///
+    /// Succeeds only when the expression has the shape `<field> <op> <literal>`
+    /// or `<literal> <op> <field>`: exactly one side must be a plain field
+    /// access convertible to a [`FieldPath`], and the other a [`LiteralValue`].
+    /// Any other shape (both sides literal, both sides field accesses, computed
+    /// expressions, subqueries) falls through to `None`, leaving the expression
+    /// in `$expr` (aggregation) language. When the literal appears on the left
+    /// (e.g. `10 < x`), the operator is commuted so the field ends up on the
+    /// "input" side of the comparison (`x > 10`).
+    ///
+    /// # Null / missing behavior
+    ///
+    /// SQL three-valued logic makes a comparison against null or missing
+    /// UNKNOWN, and a `WHERE` clause keeps only rows that evaluate to TRUE, so
+    /// null and missing fields must never satisfy a comparison.
+    ///
+    /// MQL comparisons are *type-bracketed* — they only match values in the same
+    /// BSON type class as their argument — which gives that behavior for free
+    /// for most operators:
+    ///
+    /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing, so they are
+    ///   emitted as bare comparisons.
+    /// - `$eq` against a non-null literal never matches null or missing, so it
+    ///   is emitted as a bare comparison.
+    /// - `$ne` inverts the bracketing: `{field: {$ne: 10}}` on its own matches
+    ///   every document that is not `10`, *including* those where `field` is
+    ///   null or missing. When the field is nullable, `$ne` is therefore wrapped
+    ///   in an explicit existence guard:
+    ///   `{$and: [{field: {$ne: null}}, {field: {$ne: 10}}]}`. `{$ne: null}` is
+    ///   the complement of `{$eq: null}` (which matches null *and* missing), so
+    ///   it matches exactly the present, non-null values. A non-nullable field
+    ///   needs no guard.
+    /// - A `NULL` literal operand cannot be expressed faithfully at all:
+    ///   `$eq: null` matches both null and missing, and `$ne: null` matches every
+    ///   present non-null value, whereas SQL says both are UNKNOWN for every row.
+    ///   Such comparisons return `None` and stay in `$expr`, where the existing
+    ///   desugaring handles them.
+    ///
+    /// The guard is applied to the *post-commute* operator, so `10 <> a` is
+    /// covered as well as `a <> 10`.
+    ///
+    /// Note that this pass is the only place these semantics can be adjusted.
+    /// `MatchNullFilteringOptimizer`, which inserts `{field: {$gt: null}}`
+    /// existence guards elsewhere in the pipeline, both runs *after* this pass
+    /// and only visits `Stage::Filter`; once a `Filter`'s condition has become a
+    /// `MatchQuery` there is no longer an `Expression`/`FieldAccess` tree to
+    /// inspect, and the translator and codegen are purely syntactic.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(MatchQuery::Comparison { .. })` when the expression is a
+    ///   `<field> <op> <literal>` comparison over a match-addressable field and
+    ///   MQL's native semantics already match SQL's.
+    /// - `Some(MatchQuery::Logical(And, [null_guard, comparison]))` for `<>` over
+    ///   a nullable field.
+    /// - `None` otherwise — including when the field name is not addressable by
+    ///   native match language, or the literal is `NULL` — leaving the expression
+    ///   in `$expr`.
+    fn rewrite_comparison(sf: &ScalarFunctionApplication) -> Option<MatchQuery> {
+        let op = Self::comparison_op(&sf.function)?;
+
+        let lhs = sf.args.first()?;
+        let rhs = sf.args.get(1)?;
+
+        // Exactly one side must be a field access, the other a literal. Normalize
+        // to (field_path, literal, needs_commute) regardless of which side the
+        // field appeared on.
+        let (field_path, literal, needs_commute): (FieldPath, LiteralValue, bool) = match (lhs, rhs)
+        {
+            (Expression::FieldAccess(fa), Expression::Literal(lit)) => {
+                (fa.clone().try_into().ok()?, lit.clone(), false)
+            }
+            (Expression::Literal(lit), Expression::FieldAccess(fa)) => {
+                (fa.clone().try_into().ok()?, lit.clone(), true)
+            }
+            _ => return None,
+        };
+
+        // Native match language cannot address a field whose name contains a
+        // `.`, starts with `$`, or is empty; such fields must stay in $expr.
+        if !Self::is_match_addressable(&field_path) {
+            return None;
+        }
+
+        // MQL cannot express a SQL comparison against NULL: `$eq: null` matches
+        // null and missing, `$ne: null` matches every present non-null value,
+        // while SQL evaluates both to UNKNOWN for every row. Leave it in $expr.
+        if matches!(literal, LiteralValue::Null) {
+            return None;
+        }
+
+        let op = if needs_commute { Self::commute(op) } else { op };
+
+        let comparison = MatchQuery::Comparison(MatchLanguageComparison {
+            function: op,
+            input: Some(field_path.clone()),
+            arg: literal,
+            cache: SchemaCache::new(),
+        });
+
+        // Every operator but `$ne` is type-bracketed and so already excludes
+        // null and missing; `$ne` over a nullable field needs an explicit
+        // existence guard to match SQL's three-valued logic.
+        if op != MatchLanguageComparisonOp::Ne || !field_path.is_nullable {
+            return Some(comparison);
+        }
+
+        // `{field: {$ne: null}}` is the existence guard in match language: it is
+        // the complement of `{$eq: null}`, which matches null and missing, so it
+        // matches exactly the present, non-null values. Note `{$gt: null}` does
+        // *not* work here — match language comparisons are type-bracketed, so
+        // `$gt: null` brackets to the null type class and matches nothing. (The
+        // `$gt: null` idiom used elsewhere in the pipeline is an `$expr`
+        // construct, where comparisons use total BSON ordering instead.)
+        let null_guard = MatchQuery::Comparison(MatchLanguageComparison {
+            function: MatchLanguageComparisonOp::Ne,
+            input: Some(field_path),
+            arg: LiteralValue::Null,
+            cache: SchemaCache::new(),
+        });
+
+        Some(MatchQuery::Logical(MatchLanguageLogical {
+            op: MatchLanguageLogicalOp::And,
+            args: vec![null_guard, comparison],
+            cache: SchemaCache::new(),
+        }))
+    }
+
     // Only rewrite a condition that consists of Is, Like, or a logical operation
     // that contains only other rewritable expressions.
     fn rewrite_condition(condition: Expression) -> Option<MatchQuery> {
         match condition {
             Expression::Is(is) => Self::rewrite_is(is),
             Expression::Like(like) => Self::rewrite_like(like),
-            Expression::FieldAccess(fa) => fa.try_into().ok().map(|fp: FieldPath| {
-                MatchQuery::Comparison(MatchLanguageComparison {
-                    function: MatchLanguageComparisonOp::Eq,
-                    input: Some(fp),
-                    arg: LiteralValue::Boolean(true),
-                    cache: SchemaCache::new(),
-                })
-            }),
+            Expression::FieldAccess(fa) => fa
+                .try_into()
+                .ok()
+                .filter(Self::is_match_addressable)
+                .map(|fp: FieldPath| {
+                    MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(fp),
+                        arg: LiteralValue::Boolean(true),
+                        cache: SchemaCache::new(),
+                    })
+                }),
             Expression::ScalarFunction(sf) => match sf.function {
                 ScalarFunction::And => Self::rewrite_logical(MatchLanguageLogicalOp::And, sf.args),
                 ScalarFunction::Or => Self::rewrite_logical(MatchLanguageLogicalOp::Or, sf.args),
                 ScalarFunction::In | ScalarFunction::NotIn => Self::rewrite_in(&sf),
+                ScalarFunction::Lt
+                | ScalarFunction::Lte
+                | ScalarFunction::Neq
+                | ScalarFunction::Eq
+                | ScalarFunction::Gt
+                | ScalarFunction::Gte => Self::rewrite_comparison(&sf),
                 // NOT is unary; only rewrite when it has exactly one operand,
                 // otherwise leave it in $expr language rather than emit a
                 // Logical{Not} we can't faithfully translate.
