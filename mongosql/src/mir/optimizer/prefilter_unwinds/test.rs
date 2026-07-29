@@ -342,6 +342,62 @@ test_prefilter_no_op! {
     }),
 }
 
+// The happy path for an already-lowered match condition: a single comparison against the
+// Unwind's opaque path becomes an ElemMatch prefilter beneath the Unwind, while the original
+// MatchFilter is preserved above it (the ElemMatch only proves the array *contains* a
+// qualifying element, so the exact per-element check is still required).
+test_prefilter! {
+    match_filter_eq_path,
+    expected = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Unwind(Unwind {
+            source: Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+                source: Stage::Sentinel.into(),
+                condition: MatchQuery::ElemMatch(ElemMatch {
+                    input: mir_field_path("foo", vec!["bar"]),
+                    condition: MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: None,
+                        arg: Integer(42),
+                        cache: SchemaCache::new(),
+                    }).into(),
+                    cache: SchemaCache::new(),
+                }),
+                cache: SchemaCache::new(),
+            }))).into(),
+            path: mir_field_path("foo", vec!["bar"]),
+            index: Some("idx".to_string()),
+            outer: false,
+            cache: SchemaCache::new(),
+            is_prefiltered: true,
+        }).into(),
+        condition: MatchQuery::Comparison(MatchLanguageComparison {
+            function: MatchLanguageComparisonOp::Eq,
+            input: Some(mir_field_path("foo", vec!["bar"])),
+            arg: Integer(42),
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+    expected_changed = true,
+    input = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Stage::Unwind(Unwind {
+            source: Stage::Sentinel.into(),
+            path: mir_field_path("foo", vec!["bar"]),
+            index: Some("idx".to_string()),
+            outer: false,
+            cache: SchemaCache::new(),
+            is_prefiltered: false,
+        }).into(),
+        condition: MatchQuery::Comparison(MatchLanguageComparison {
+            function: MatchLanguageComparisonOp::Eq,
+            input: Some(mir_field_path("foo", vec!["bar"])),
+            arg: Integer(42),
+            cache: SchemaCache::new(),
+        }),
+        cache: SchemaCache::new(),
+    }))),
+}
+
 // Prefiltering only applies directly above an Unwind. A MatchFilter over any other
 // source is rebuilt unchanged.
 test_prefilter_no_op! {
