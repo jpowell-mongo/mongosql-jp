@@ -623,24 +623,24 @@ impl StageMovementVisitor<'_> {
                     }
                 }
 
-                // // Native match language ($match find syntax) cannot reference correlated `let`
-                // // variables. If a MatchFilter that uses datasources from BOTH the source (LHS) and
-                // // subquery (RHS) were moved into the subquery, its LHS field references would
-                // // become correlated `$$`-variables, which native match cannot express (they would
-                // // fail translation with Error::InvalidMatchLanguageInputRef). Keep such a
-                // // MatchFilter above the join, where every datasource is a plain field reference. A
-                // // regular $expr Filter is unaffected: correlated variables are valid in $expr.
-                // if matches!(node, Stage::MqlIntrinsic(MqlStage::MatchFilter(_))) {
-                //     let uses_left = datasource_uses
-                //         .iter()
-                //         .any(|u| source_result_set.has_datasource(u));
-                //     let uses_right = datasource_uses
-                //         .iter()
-                //         .any(|u| right_schema.has_datasource(u));
-                //     if uses_left && uses_right {
-                //         return (node, false);
-                //     }
-                // }
+                // Native match language ($match find syntax) cannot reference correlated `let`
+                // variables. If a MatchFilter that uses datasources from BOTH the source (LHS) and
+                // subquery (RHS) were moved into the subquery, its LHS field references would
+                // become correlated `$$`-variables, which native match cannot express (they would
+                // fail translation with Error::InvalidMatchLanguageInputRef). Keep such a
+                // MatchFilter above the join, where every datasource is a plain field reference. A
+                // regular $expr Filter is unaffected: correlated variables are valid in $expr.
+                if matches!(node, Stage::MqlIntrinsic(MqlStage::MatchFilter(_))) {
+                    let uses_left = datasource_uses
+                        .iter()
+                        .any(|u| source_result_set.has_datasource(u));
+                    let uses_right = datasource_uses
+                        .iter()
+                        .any(|u| right_schema.has_datasource(u));
+                    if uses_left && uses_right {
+                        return (node, false);
+                    }
+                }
 
                 let side = if datasource_uses
                     .iter()
