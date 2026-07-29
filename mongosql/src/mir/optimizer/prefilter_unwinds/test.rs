@@ -342,10 +342,7 @@ test_prefilter_no_op! {
     }),
 }
 
-// The happy path for an already-lowered match condition: a single comparison against the
-// Unwind's opaque path becomes an ElemMatch prefilter beneath the Unwind, while the original
-// MatchFilter is preserved above it (the ElemMatch only proves the array *contains* a
-// qualifying element, so the exact per-element check is still required).
+// A MatchFilter with an unwind generates an elem-match prefilter.
 test_prefilter! {
     match_filter_eq_path,
     expected = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
