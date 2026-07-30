@@ -202,10 +202,9 @@ fn generate_match_prefilter(
     )
 }
 
-// Pulls (op, literal) out of a lowered match condition. For an `And`,
-// returns the first conjunct that is a comparison against
-// a non-null literal. Comparisons against `null` are skipped because they carry no
-// bound useful for building an ElemMatch prefilter (
+// Pulls (op, literal) out of a lowered match condition.
+// For the AND operator, grabs the first comparison that has a non-null literal.
+// The rewrite_to_match_langauge pass will prevent any null literal comparisons from being used in match language.
 fn extract_comparison(condition: &MatchQuery) -> Option<(MatchLanguageComparisonOp, LiteralValue)> {
     match condition {
         MatchQuery::Comparison(c) => Some((c.function, c.arg.clone())),
