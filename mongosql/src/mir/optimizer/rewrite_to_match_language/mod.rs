@@ -281,10 +281,8 @@ impl MatchLanguageRewriterVisitor {
     /// BSON type class as their argument — which gives that behavior for free
     /// for most operators. Type bracketing exclusively applies to match language, not `$expr` language.
     ///
-    /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing when compared to a non-null literal,
-    ///  so they are emitted as bare comparisons.
-    ///
-    ///
+    /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing when compared
+    ///   to a non-null literal, so they are emitted as bare comparisons.
     /// - `$eq` against a non-null literal never matches null or missing, so it
     ///   is emitted as a bare comparison.
     /// - `$ne` inverts the bracketing: `{field: {$ne: 10}}` on its own matches
