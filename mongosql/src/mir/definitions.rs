@@ -42,6 +42,10 @@ impl Stage {
     pub fn is_sort(&self) -> bool {
         matches!(self, Stage::Sort(_))
     }
+
+    pub fn is_match_filter(&self) -> bool {
+        matches!(self, Stage::MqlIntrinsic(MqlStage::MatchFilter(_)))
+    }
 }
 
 #[derive(PartialEq, Debug, Clone)]

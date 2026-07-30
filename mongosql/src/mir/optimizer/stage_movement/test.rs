@@ -1965,8 +1965,8 @@ test_move_stage!(
     }))),
 );
 
-test_move_stage!(
-    move_match_filter_into_lateral_inner_join_subquery_if_both_datasources_are_used,
+test_move_stage_no_op!(
+    match_filter_does_not_move_if_both_datasources_are_used,
     expected = Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
         join_type: JoinType::Inner,
         source: mir_collection("foo", "bar"),
@@ -2024,6 +2024,27 @@ test_move_stage!(
         }),
         cache: SchemaCache::new(),
     }))),
+);
+
+// The TPCH Q7 shape, and the passing counterpart to the test above. Q7's WHERE clause contains
+//     (n1.n_name = 'UNITED STATES' AND n2.n_name = 'JAPAN')
+//  OR (n1.n_name = 'JAPAN'         AND n2.n_name = 'UNITED STATES')
+// which rewrite_to_match_language turns into a single MatchFilter using both nation aliases, and
+// lower_joins puts an Inner LateralJoin underneath it. Moving that MatchFilter into the `n2`
+// subquery would leave the `n1` comparisons addressing a correlated `$$`-variable that native match
+// language cannot name, so it must stay above the join.
+test_move_stage_no_op!(
+    match_filter_over_lateral_inner_join_does_not_move_if_both_datasources_are_used,
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+        source: Box::new(Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
+            join_type: JoinType::Inner,
+            source: mir_collection("tpch", "n1"),
+            subquery: mir_collection("tpch", "n2"),
+            cache: SchemaCache::new(),
+        }))),
+        condition: nation_names_match_condition(),
+        cache: SchemaCache::new(),
+    })))
 );
 
 test_move_stage!(

@@ -623,6 +623,25 @@ impl StageMovementVisitor<'_> {
                     }
                 }
 
+                // Native match language ($match find syntax) cannot reference correlated `let`
+                // variables. If a MatchFilter that uses datasources from BOTH the source (LHS) and
+                // subquery (RHS) were moved into the subquery, its LHS field references would
+                // become correlated `$$`-variables, which native match cannot express (they would
+                // fail translation with Error::InvalidMatchLanguageInputRef). Keep such a
+                // MatchFilter above the join, where every datasource is a plain field reference. A
+                // regular $expr Filter is unaffected: correlated variables are valid in $expr.
+                //
+                // Call dual_source() to check if it can be moved.
+                if node.is_match_filter() {
+                    return self.dual_source(
+                        node,
+                        datasource_uses,
+                        source_result_set,
+                        right_schema,
+                        false,
+                    );
+                }
+
                 let side = if datasource_uses
                     .iter()
                     .any(|u| right_schema.has_datasource(u))
