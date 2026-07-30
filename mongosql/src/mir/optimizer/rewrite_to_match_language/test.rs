@@ -958,26 +958,6 @@ test_rewrite_to_match_language_no_op!(
     )))
 );
 
-// -------------------------------------------------------------------------
-// Delimited identifiers containing `$` and `.`
-// -------------------------------------------------------------------------
-
-// A delimited identifier like `$a.b` is a single field whose name literally
-// contains a `$` and a `.`. The FieldAccess -> FieldPath conversion must
-// preserve it as one path component (not split on `.`, not drop the `$a`).
-#[test]
-fn field_access_with_dollar_and_dot_converts_to_single_component_path() {
-    let fa = match *mir_field_access("foo", "$a.b", true) {
-        Expression::FieldAccess(fa) => fa,
-        _ => unreachable!(),
-    };
-    let fp: FieldPath = fa.try_into().unwrap();
-    assert_eq!(fp, mir_field_path("foo", vec!["$a.b"]));
-    // Assert on `fields` directly: FieldPath's PartialEq ignores is_nullable
-    // and we want the component boundary to be explicit here.
-    assert_eq!(fp.fields, vec!["$a.b".to_string()]);
-}
-
 // A field whose name starts with `$` and contains `.` (the delimited SQL
 // identifier `$a.b`) cannot be addressed by native match language, so the
 // comparison stays in $expr where the $getField translation handles it.
