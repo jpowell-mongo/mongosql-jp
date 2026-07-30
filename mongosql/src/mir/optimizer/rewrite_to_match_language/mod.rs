@@ -282,7 +282,7 @@ impl MatchLanguageRewriterVisitor {
     /// for most operators. Type bracketing exclusively applies to match language, not `$expr` language.
     ///
     /// - `$lt`, `$lte`, `$gt`, `$gte` never match null or missing when compared to a non-null literal,
-    ///    so they are emitted as bare comparisons.
+    ///  so they are emitted as bare comparisons.
     ///
     ///
     /// - `$eq` against a non-null literal never matches null or missing, so it
@@ -310,6 +310,12 @@ impl MatchLanguageRewriterVisitor {
     /// and only visits `Stage::Filter`; once a `Filter`'s condition has become a
     /// `MatchQuery` there is no longer an `Expression`/`FieldAccess` tree to
     /// inspect, and the translator and codegen are purely syntactic.
+    ///
+    /// In Match Language the `$gt: null` compares elements against null, and
+    /// will return an empty result set, whereas the same null guard, `$gt: null` will
+    /// filter out null elements.
+    ///
+    /// Meanwhile, a `$ne: null` existence guard will always filter out null and missing elements.
     ///
     /// # Returns
     ///
@@ -349,7 +355,7 @@ impl MatchLanguageRewriterVisitor {
 
         // MQL cannot express a SQL comparison against NULL: `$eq: null` matches
         // null and missing, `$ne: null` matches every present non-null value,
-        // while SQL evaluates both to UNKNOWN for every row. Leave it in $expr.
+        // this is also for other comparison operators due to type bracketing.
         if matches!(literal, LiteralValue::Null) {
             return None;
         }

@@ -724,7 +724,7 @@ test_rewrite_to_match_language!(
     input = filter_stage(comparison(ScalarFunction::Lte, true))
 );
 
-// `$ne` inverts the type bracketing and would otherwise match null and missing,
+// `$ne: null` inverts the type bracketing and would otherwise match null and missing,
 // so over a nullable field it is wrapped in a `{$gt: null}` existence guard.
 test_rewrite_to_match_language!(
     rewrite_neq_over_nullable_field_is_guarded,
