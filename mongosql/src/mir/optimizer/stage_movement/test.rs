@@ -1967,37 +1967,7 @@ test_move_stage!(
 
 test_move_stage_no_op!(
     match_filter_does_not_move_if_both_datasources_are_used,
-    expected = Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
-        join_type: JoinType::Inner,
-        source: mir_collection("foo", "bar"),
-        subquery: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
-            MatchFilter {
-                source: mir_collection("foo", "bar2"),
-                condition: MatchQuery::Logical(MatchLanguageLogical {
-                    op: MatchLanguageLogicalOp::And,
-                    args: vec![
-                        MatchQuery::Comparison(MatchLanguageComparison {
-                            function: MatchLanguageComparisonOp::Gt,
-                            input: Some(mir_field_path("bar2", vec!["x", "a", "b"])),
-                            arg: LiteralValue::Integer(24),
-                            cache: SchemaCache::new(),
-                        }),
-                        MatchQuery::Comparison(MatchLanguageComparison {
-                            function: MatchLanguageComparisonOp::Gt,
-                            input: Some(mir_field_path("bar", vec!["y"])),
-                            arg: LiteralValue::Integer(25),
-                            cache: SchemaCache::new(),
-                        }),
-                    ],
-                    cache: SchemaCache::new(),
-                }),
-                cache: SchemaCache::new(),
-            }
-        )))),
-        cache: SchemaCache::new(),
-    })),
-    expected_changed = true,
-    input = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+    Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
         source: Box::new(Stage::MqlIntrinsic(MqlStage::LateralJoin(LateralJoin {
             join_type: JoinType::Inner,
             source: mir_collection("foo", "bar"),
@@ -2023,7 +1993,7 @@ test_move_stage_no_op!(
             cache: SchemaCache::new(),
         }),
         cache: SchemaCache::new(),
-    }))),
+    })))
 );
 
 // The TPCH Q7 shape, and the passing counterpart to the test above. Q7's WHERE clause contains
