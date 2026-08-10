@@ -115,7 +115,6 @@ tests:
               },
           },
       }
-
   - name: "desugar $sqlLt"
     input:
       - { "$project": { "_id": 0, "expr": { "$sqlLt": ["$a", "$b"] } } }
@@ -1462,6 +1461,193 @@ tests:
 
                             { "$literal": null },
                             { "$not": ["$$desugared_sqlNot_input0"] },
+                          ],
+                      },
+                  },
+              },
+          },
+      }
+  - name: "desugar $sqlLt in match stage adds null guard for field access"
+    input:
+      - { "$match": { "$expr": { "$sqlLt": ["$a", 0] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$lt": ["$a", 0] },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlGt in match stage adds null guards for both field accesses"
+    input:
+      - { "$match": { "$expr": { "$sqlGt": ["$a", "$b"] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$gt": ["$b", { "$literal": null }] },
+                    { "$gt": ["$a", "$b"] },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlGte in match stage with literal LHS guards only the field access"
+    input:
+      - { "$match": { "$expr": { "$sqlGte": [100, "$a"] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$gte": [100, "$a"] },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlNe in match stage with two literals emits bare mql op"
+    input:
+      - { "$match": { "$expr": { "$sqlNe": [1, 2] } } }
+    expected:
+      - { "$match": { "$expr": { "$ne": [1, 2] } } }
+
+  - name: "desugar $sqlOr of binary comparisons in match stage adds null guards"
+    input:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$sqlOr":
+                  [{ "$sqlLt": ["$a", 10] }, { "$sqlGt": ["$b", 20] }],
+              },
+          },
+      }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$or":
+                  [
+                    {
+                      "$and":
+                        [
+                          { "$gt": ["$a", { "$literal": null }] },
+                          { "$lt": ["$a", 10] },
+                        ],
+                    },
+                    {
+                      "$and":
+                        [
+                          { "$gt": ["$b", { "$literal": null }] },
+                          { "$gt": ["$b", 20] },
+                        ],
+                    },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlAnd of binary comparisons in match stage adds null guards"
+    input:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$sqlAnd":
+                  [{ "$sqlLte": ["$a", 10] }, { "$sqlGte": ["$a", 0] }],
+              },
+          },
+      }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    {
+                      "$and":
+                        [
+                          { "$gt": ["$a", { "$literal": null }] },
+                          { "$lte": ["$a", 10] },
+                        ],
+                    },
+                    {
+                      "$and":
+                        [
+                          { "$gt": ["$a", { "$literal": null }] },
+                          { "$gte": ["$a", 0] },
+                        ],
+                    },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlLt outside match stage keeps $let/$cond form"
+    input:
+      - { "$match": { "$expr": { "$sqlLt": ["$a", 0] } } }
+      - { "$project": { "_id": 0, "expr": { "$sqlLt": ["$a", 200] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$lt": ["$a", 0] },
+                  ],
+              },
+          },
+      }
+      - {
+        "$project":
+          {
+            "_id": 0,
+            "expr":
+              {
+                "$let":
+                  {
+                    "vars": { "desugared_sqlLt_input0": "$a" },
+                    "in":
+                      {
+                        "$cond":
+                          [
+                            {
+                              "$lte":
+                                [
+                                  "$$desugared_sqlLt_input0",
+                                  { "$literal": null },
+                                ],
+                            },
+
+                            { "$literal": null },
+
+                            { "$lt": ["$$desugared_sqlLt_input0", 200] },
                           ],
                       },
                   },

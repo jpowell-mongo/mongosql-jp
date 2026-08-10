@@ -365,6 +365,95 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
     }
 }
 
+#[derive(Default)]
+struct SqlNullSemanticsMatchStageDesugarerVisitor {
+    is_in_match_context: bool,
+}
+
+impl SqlNullSemanticsMatchStageDesugarerVisitor {
+    /**
+    Given an expression that contains a field reference,
+    wraps the expression in an $and statement, and adds a null guard for
+    any field reference that appears in the expression
+
+    */
+    fn rewrite_field_accesses_to_conjunction_of_null_guard(
+        &mut self,
+        node: Expression,
+    ) -> Expression {
+        // 1. If not in a match context, return immediately
+        if !self.is_in_match_context {
+            return node;
+        }
+
+        match node {
+            SqlSemanticOperator(sql_operator) => {
+                match sql_operator.op {
+                    // For comparison operators we want to wrap the expression in an and statement and have a null guard for any field references
+                    Lt | Lte | Gt | Gte | Eq | Ne => {
+                        // 1. Get the left hand side and right hand side of the expression
+                        let lhs = sql_operator.args[0].clone();
+                        let rhs = sql_operator.args[1].clone();
+
+                        // 2. For each field reference we greate a null guard for it.
+                        let field_reference_null_guards: Vec<Expression> =
+                            vec![lhs.clone(), rhs.clone()]
+                                .into_iter()
+                                .filter(|arg| matches!(arg, FieldRef(_)))
+                                .map(|field_reference| {
+                                    // Return an expression that checks if the field reference is null
+                                    MqlSemanticOperator(air::MqlSemanticOperator {
+                                        op: MqlOperator::Gt,
+                                        args: vec![field_reference, Literal(LiteralValue::Null)],
+                                    })
+                                })
+                                .collect();
+
+                        // 3. Create a new $and expression that contains the null guards and the original expression
+                        let mut and_args = field_reference_null_guards;
+                        and_args.push(MqlSemanticOperator(air::MqlSemanticOperator {
+                            op: sql_op_to_mql_op(sql_operator.op).unwrap(),
+                            args: vec![lhs, rhs],
+                        }));
+
+                        // Both operands were literals, so there is no guard to add.
+                        // Emit the bare operator rather than a single-element $and.
+                        if and_args.len() == 1 {
+                            return and_args.pop().unwrap();
+                        }
+
+                        MqlSemanticOperator(air::MqlSemanticOperator {
+                            op: MqlOperator::And,
+                            args: and_args,
+                        })
+                    }
+                    And | Or => {
+                        // For logical operators we want to recursively call this function on the arguments
+                        let new_args: Vec<Expression> = sql_operator
+                            .args
+                            .into_iter()
+                            .map(|arg| {
+                                self.rewrite_field_accesses_to_conjunction_of_null_guard(arg)
+                            })
+                            .collect();
+
+                        MqlSemanticOperator(air::MqlSemanticOperator {
+                            op: sql_op_to_mql_op(sql_operator.op).unwrap(),
+                            args: new_args,
+                        })
+                    }
+                    // Any other operator is left for the main desugarer pass to handle.
+                    _ => SqlSemanticOperator(sql_operator),
+                }
+            }
+            _ => node,
+        }
+    }
+}
+impl Visitor for SqlNullSemanticsMatchStageDesugarerVisitor {
+    // Keep track of if you're in a match context
+}
+
 impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
     fn visit_expression(&mut self, node: Expression) -> Expression {
         let node = match node {
@@ -393,5 +482,154 @@ impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
             _ => node,
         };
         node.walk(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Visitor pre-set to match context. The flag itself is not under test here;
+    /// these tests exercise the rewrite logic in isolation.
+    fn visitor() -> SqlNullSemanticsMatchStageDesugarerVisitor {
+        SqlNullSemanticsMatchStageDesugarerVisitor {
+            is_in_match_context: true,
+        }
+    }
+
+    fn field(name: &str) -> Expression {
+        FieldRef(name.into())
+    }
+
+    fn int(v: i32) -> Expression {
+        Literal(LiteralValue::Integer(v))
+    }
+
+    fn sql_op(op: air::SqlOperator, args: Vec<Expression>) -> Expression {
+        SqlSemanticOperator(air::SqlSemanticOperator { op, args })
+    }
+
+    fn mql_op(op: MqlOperator, args: Vec<Expression>) -> Expression {
+        MqlSemanticOperator(air::MqlSemanticOperator { op, args })
+    }
+
+    /// `$gt([<field>, null])` — true iff the field is non-null and non-missing,
+    /// because null and missing sort below all other BSON types.
+    fn null_guard(name: &str) -> Expression {
+        mql_op(
+            MqlOperator::Gt,
+            vec![field(name), Literal(LiteralValue::Null)],
+        )
+    }
+
+    #[test]
+    fn comparison_with_field_and_literal_gets_one_null_guard() {
+        let input = sql_op(air::SqlOperator::Lt, vec![field("a"), int(0)]);
+        let expected = mql_op(
+            MqlOperator::And,
+            vec![
+                null_guard("a"),
+                mql_op(MqlOperator::Lt, vec![field("a"), int(0)]),
+            ],
+        );
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn comparison_with_two_fields_gets_a_guard_for_each() {
+        let input = sql_op(air::SqlOperator::Gt, vec![field("a"), field("b")]);
+        let expected = mql_op(
+            MqlOperator::And,
+            vec![
+                null_guard("a"),
+                null_guard("b"),
+                mql_op(MqlOperator::Gt, vec![field("a"), field("b")]),
+            ],
+        );
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn comparison_with_literal_lhs_guards_only_the_field() {
+        let input = sql_op(air::SqlOperator::Gte, vec![int(100), field("a")]);
+        let expected = mql_op(
+            MqlOperator::And,
+            vec![
+                null_guard("a"),
+                mql_op(MqlOperator::Gte, vec![int(100), field("a")]),
+            ],
+        );
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn comparison_with_two_literals_is_left_unguarded() {
+        let input = sql_op(air::SqlOperator::Ne, vec![int(1), int(2)]);
+        let expected = mql_op(MqlOperator::Ne, vec![int(1), int(2)]);
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn logical_operator_recurses_into_each_operand() {
+        let input = sql_op(
+            air::SqlOperator::Or,
+            vec![
+                sql_op(air::SqlOperator::Lt, vec![field("a"), int(10)]),
+                sql_op(air::SqlOperator::Gt, vec![field("b"), int(20)]),
+            ],
+        );
+        let expected = mql_op(
+            MqlOperator::Or,
+            vec![
+                mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("a"),
+                        mql_op(MqlOperator::Lt, vec![field("a"), int(10)]),
+                    ],
+                ),
+                mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("b"),
+                        mql_op(MqlOperator::Gt, vec![field("b"), int(20)]),
+                    ],
+                ),
+            ],
+        );
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn unhandled_operator_is_returned_unchanged() {
+        let input = sql_op(air::SqlOperator::Size, vec![field("a")]);
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input.clone());
+
+        assert_eq!(input, actual);
+    }
+
+    #[test]
+    fn non_sql_operator_expression_is_returned_unchanged() {
+        let input = field("a");
+
+        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input.clone());
+
+        assert_eq!(input, actual);
     }
 }
