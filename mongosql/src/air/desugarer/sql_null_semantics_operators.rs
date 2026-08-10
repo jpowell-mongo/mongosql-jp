@@ -18,12 +18,18 @@ pub struct SqlNullSemanticsOperatorsDesugarerPass;
 
 impl Pass for SqlNullSemanticsOperatorsDesugarerPass {
     fn apply(&self, pipeline: air::Stage) -> Result<air::Stage> {
-        Ok(pipeline.walk(&mut SqlNullSemanticsOperatorsDesugarerVisitor))
+        Ok(pipeline.walk(&mut SqlNullSemanticsOperatorsDesugarerVisitor::default()))
     }
 }
 
 #[derive(Default)]
-struct SqlNullSemanticsOperatorsDesugarerVisitor;
+struct SqlNullSemanticsOperatorsDesugarerVisitor {
+    /// True while visiting the `$expr` side of a `Match::ExprLanguage` node.
+    /// Binary comparisons and logical connectives are rewritten differently
+    /// in this context so that null guards remain index-eligible predicates
+    /// (a conjunction of comparisons) instead of a `$let`/`$cond` expression.
+    is_in_match_context: bool,
+}
 
 impl SqlNullSemanticsOperatorsDesugarerVisitor {
     fn literal_check_args(
@@ -363,29 +369,17 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
             })
         }
     }
-}
 
-#[derive(Default)]
-struct SqlNullSemanticsMatchStageDesugarerVisitor {
-    is_in_match_context: bool,
-}
-
-impl SqlNullSemanticsMatchStageDesugarerVisitor {
-    /**
-    Given an expression that contains a field reference,
-    wraps the expression in an $and statement, and adds a null guard for
-    any field reference that appears in the expression
-
-    */
+    /// Given a binary comparison or logical-connective `SqlSemanticOperator`
+    /// expression, rewrites it so that any field reference operand is
+    /// null-guarded by a preceding `$gt(<field>, null)` check, conjoined via
+    /// `$and`. This lets the query planner use an index against the
+    /// resulting predicate, which a `$let`/`$cond` desugaring would not
+    /// allow. Only called while `is_in_match_context` is true.
     fn rewrite_field_accesses_to_conjunction_of_null_guard(
         &mut self,
         node: Expression,
     ) -> Expression {
-        // 1. If not in a match context, return immediately
-        if !self.is_in_match_context {
-            return node;
-        }
-
         match node {
             SqlSemanticOperator(sql_operator) => {
                 match sql_operator.op {
@@ -450,14 +444,32 @@ impl SqlNullSemanticsMatchStageDesugarerVisitor {
         }
     }
 }
-impl Visitor for SqlNullSemanticsMatchStageDesugarerVisitor {
-    // Keep track of if you're in a match context
-}
 
 impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
+    fn visit_match(&mut self, node: air::Match) -> air::Match {
+        match node {
+            air::Match::ExprLanguage(air::ExprLanguage { source, expr }) => {
+                let source = self.visit_stage(*source);
+                let prev = self.is_in_match_context;
+                self.is_in_match_context = true;
+                let expr = self.visit_expression(*expr);
+                self.is_in_match_context = prev;
+                air::Match::ExprLanguage(air::ExprLanguage {
+                    source: Box::new(source),
+                    expr: Box::new(expr),
+                })
+            }
+            air::Match::MatchLanguage(ml) => air::Match::MatchLanguage(ml.walk(self)),
+        }
+    }
+
     fn visit_expression(&mut self, node: Expression) -> Expression {
         let node = match node {
             SqlSemanticOperator(sql_operator) => match sql_operator.op {
+                Eq | Lt | Lte | Gt | Gte | Ne | And | Or if self.is_in_match_context => self
+                    .rewrite_field_accesses_to_conjunction_of_null_guard(SqlSemanticOperator(
+                        sql_operator,
+                    )),
                 And => self.desugar_sql_and(sql_operator),
                 Or => self.desugar_sql_or(sql_operator),
                 Eq | IndexOfCP | Lt | Lte | Gt | Gte | Ne | Not | Size | StrLenBytes | StrLenCP
@@ -491,8 +503,8 @@ mod tests {
 
     /// Visitor pre-set to match context. The flag itself is not under test here;
     /// these tests exercise the rewrite logic in isolation.
-    fn visitor() -> SqlNullSemanticsMatchStageDesugarerVisitor {
-        SqlNullSemanticsMatchStageDesugarerVisitor {
+    fn visitor() -> SqlNullSemanticsOperatorsDesugarerVisitor {
+        SqlNullSemanticsOperatorsDesugarerVisitor {
             is_in_match_context: true,
         }
     }
