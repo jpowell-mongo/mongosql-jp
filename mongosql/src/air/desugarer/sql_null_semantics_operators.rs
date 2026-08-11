@@ -368,23 +368,35 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
     /// expression, rewrites it so that any field reference operand is
     /// null-guarded by a preceding `$gt(<field>, null)` check, conjoined via
     /// `$and`
-    fn rewrite_field_accesses_to_conjunction_of_null_guard(
-        &mut self,
-        node: Expression,
-    ) -> Expression {
+    fn null_guard_match_predicates(&mut self, node: Expression) -> Expression {
         match node {
             SqlSemanticOperator(sql_operator) => {
                 match sql_operator.op {
-                    // For comparison operators we want to wrap the expression in an and statement and have a null guard for any non-literal operand
+                    // For comparison operators we want to wrap the expression in an and statement
+                    // that checks for null operands. Ultimately producing an expression like:
+                    // and ( <original operation>, ...gt(<operand>, null)) for any other field refs, or variables in the expression
                     Lt | Lte | Gt | Gte | Eq | Ne => {
-                        // 1. Get the left hand side and right hand side of the expression
                         let lhs = sql_operator.args[0].clone();
                         let rhs = sql_operator.args[1].clone();
 
-                        // 2. For each non-literal operand we create a null guard for it.
-                        let null_guards: Vec<Expression> = vec![lhs.clone(), rhs.clone()]
+                        // FieldRef/Variable/Literal are cheap enough to embed directly into a
+                        // hand-built Mql comparison. Anything else (a nested scalar/array
+                        // function call, a CASE expression, ...) is not - guarding it here
+                        // would mean evaluating it twice - so if either side isn't one of
+                        // these, keep the original comparison intact instead of rebuilding it,
+                        // so desugar_sql_op null-guards the compound side exactly once.
+                        let is_simple =
+                            |e: &Expression| matches!(e, Literal(_) | FieldRef(_) | Variable(_));
+                        // Only FieldRef/Variable operands are worth an explicit guard here -
+                        // it's what keeps the comparison index-eligible.
+                        let requires_null_guard =
+                            |e: &Expression| matches!(e, FieldRef(_) | Variable(_));
+
+                        // 1. For each operand that requires a null guard we create one for it.
+                        let mut and_args: Vec<Expression> = vec![&lhs, &rhs]
                             .into_iter()
-                            .filter(|arg| !matches!(arg, Literal(_)))
+                            .filter(|arg| requires_null_guard(arg))
+                            .cloned()
                             .map(|operand| {
                                 // Return an expression that checks if the operand is null
                                 MqlSemanticOperator(air::MqlSemanticOperator {
@@ -394,14 +406,18 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                             })
                             .collect();
 
-                        // 3. Create a new $and expression that contains the null guards and the original expression
-                        let mut and_args = null_guards;
-                        and_args.push(MqlSemanticOperator(air::MqlSemanticOperator {
-                            op: sql_op_to_mql_op(sql_operator.op).unwrap(),
-                            args: vec![lhs, rhs],
-                        }));
+                        // 2. Add the comparison itself: rebuilt as Mql if both sides are simple,
+                        // otherwise left as the original Sql operator for desugar_sql_op to handle.
+                        and_args.push(if is_simple(&lhs) && is_simple(&rhs) {
+                            MqlSemanticOperator(air::MqlSemanticOperator {
+                                op: sql_op_to_mql_op(sql_operator.op).unwrap(),
+                                args: vec![lhs, rhs],
+                            })
+                        } else {
+                            SqlSemanticOperator(sql_operator)
+                        });
 
-                        // Both operands were literals, so there is no guard to add.
+                        // No guard was added, so there is nothing to conjoin.
                         if and_args.len() == 1 {
                             return and_args.pop().unwrap();
                         }
@@ -416,9 +432,7 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                         let new_args: Vec<Expression> = sql_operator
                             .args
                             .into_iter()
-                            .map(|arg| {
-                                self.rewrite_field_accesses_to_conjunction_of_null_guard(arg)
-                            })
+                            .map(|arg| self.null_guard_match_predicates(arg))
                             .collect();
 
                         MqlSemanticOperator(air::MqlSemanticOperator {
@@ -429,6 +443,27 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                     // Any other operator is left for the main desugarer pass to handle.
                     _ => SqlSemanticOperator(sql_operator),
                 }
+            }
+            // We match on the switch (Case statement) because we just want to wrap the expressions within the cases, not the entire statement
+            Switch(switch_expr) => {
+                // 1. Call the function on each of the Switch Cases
+                let new_branches: Vec<SwitchCase> = switch_expr
+                    .branches
+                    .into_iter()
+                    .map(|branch| SwitchCase {
+                        case: Box::new(self.null_guard_match_predicates(*branch.case)),
+                        then: Box::new(self.null_guard_match_predicates(*branch.then)),
+                    })
+                    .collect();
+
+                // 2. Call the function on the default case
+                let new_default = Box::new(self.null_guard_match_predicates(*switch_expr.default));
+
+                // 3. Reconstruct the Switch with the new expression, returning a new Switch expression
+                Switch(air::Switch {
+                    branches: new_branches,
+                    default: new_default,
+                })
             }
             _ => node,
         }
@@ -447,7 +482,7 @@ impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
                 // into). This keeps the rewrite scoped to exactly the And/Or/comparison chain
                 // reachable from the match root, instead of leaking into unrelated nested
                 // constructs that depend on three-valued (true/null/false) semantics.
-                let expr = self.rewrite_field_accesses_to_conjunction_of_null_guard(*expr);
+                let expr = self.null_guard_match_predicates(*expr);
                 let expr = self.visit_expression(expr);
                 air::Match::ExprLanguage(air::ExprLanguage {
                     source: Box::new(source),
@@ -532,7 +567,7 @@ mod tests {
             ],
         );
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+        let actual = visitor().null_guard_match_predicates(input);
 
         assert_eq!(expected, actual);
     }
@@ -549,7 +584,7 @@ mod tests {
             ],
         );
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+        let actual = visitor().null_guard_match_predicates(input);
 
         assert_eq!(expected, actual);
     }
@@ -565,7 +600,7 @@ mod tests {
             ],
         );
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+        let actual = visitor().null_guard_match_predicates(input);
 
         assert_eq!(expected, actual);
     }
@@ -575,9 +610,43 @@ mod tests {
         let input = sql_op(air::SqlOperator::Ne, vec![int(1), int(2)]);
         let expected = mql_op(MqlOperator::Ne, vec![int(1), int(2)]);
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+        let actual = visitor().null_guard_match_predicates(input);
 
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn comparison_with_field_and_compound_operand_guards_field_and_defers_compound() {
+        // The rhs is a compound expression (not a FieldRef/Variable/Literal), so guarding it
+        // here would mean evaluating it twice. Instead, guard the field (cheap to repeat) and
+        // keep the original comparison intact so desugar_sql_op null-guards the compound side
+        // exactly once.
+        let compound = sql_op(air::SqlOperator::StrLenCP, vec![field("b")]);
+        let input = sql_op(air::SqlOperator::Ne, vec![field("a"), compound.clone()]);
+        let expected = mql_op(
+            MqlOperator::And,
+            vec![
+                null_guard("a"),
+                sql_op(air::SqlOperator::Ne, vec![field("a"), compound]),
+            ],
+        );
+
+        let actual = visitor().null_guard_match_predicates(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn comparison_with_two_compound_operands_defers_entirely() {
+        // Neither side is a FieldRef/Variable/Literal, so there is nothing cheap to guard here;
+        // defer the whole comparison, unchanged, to desugar_sql_op.
+        let lhs = sql_op(air::SqlOperator::StrLenCP, vec![field("a")]);
+        let rhs = sql_op(air::SqlOperator::StrLenCP, vec![field("b")]);
+        let input = sql_op(air::SqlOperator::Ne, vec![lhs, rhs]);
+
+        let actual = visitor().null_guard_match_predicates(input.clone());
+
+        assert_eq!(input, actual);
     }
 
     #[test]
@@ -609,7 +678,7 @@ mod tests {
             ],
         );
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input);
+        let actual = visitor().null_guard_match_predicates(input);
 
         assert_eq!(expected, actual);
     }
@@ -618,7 +687,7 @@ mod tests {
     fn unhandled_operator_is_returned_unchanged() {
         let input = sql_op(air::SqlOperator::Size, vec![field("a")]);
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input.clone());
+        let actual = visitor().null_guard_match_predicates(input.clone());
 
         assert_eq!(input, actual);
     }
@@ -627,7 +696,7 @@ mod tests {
     fn non_sql_operator_expression_is_returned_unchanged() {
         let input = field("a");
 
-        let actual = visitor().rewrite_field_accesses_to_conjunction_of_null_guard(input.clone());
+        let actual = visitor().null_guard_match_predicates(input.clone());
 
         assert_eq!(input, actual);
     }
