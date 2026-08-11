@@ -701,6 +701,38 @@ mod match_predicate_null_guard_tests {
     }
 
     #[test]
+    fn logical_operator_mixes_guarded_and_deferred_branches() {
+        // a > 5 AND CHAR_LENGTH(b) <> 0 - one branch is a simple field comparison (guarded), the
+        // other's operand is compound (deferred to desugar_sql_op). And/Or must recurse into
+        // each branch independently rather than treating the whole thing uniformly.
+        let compound = sql_op(air::SqlOperator::StrLenCP, vec![field("b")]);
+        let input = sql_op(
+            air::SqlOperator::And,
+            vec![
+                sql_op(air::SqlOperator::Gt, vec![field("a"), int(5)]),
+                sql_op(air::SqlOperator::Ne, vec![compound.clone(), int(0)]),
+            ],
+        );
+        let expected = mql_op(
+            MqlOperator::And,
+            vec![
+                mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("a"),
+                        mql_op(MqlOperator::Gt, vec![field("a"), int(5)]),
+                    ],
+                ),
+                sql_op(air::SqlOperator::Ne, vec![compound, int(0)]),
+            ],
+        );
+
+        let actual = visitor().null_guard_match_predicates(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
     fn switch_case_and_then_branches_are_each_rewritten() {
         // Each branch's `case` and `then` is rewritten independently; a comparison in either
         // position gets the same guard treatment as it would at the top level.
