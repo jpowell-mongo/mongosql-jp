@@ -364,31 +364,39 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
         }
     }
 
-    /// Given a binary comparison or logical-connective `SqlSemanticOperator`
-    /// expression, rewrites it so that any field reference operand is
-    /// null-guarded by a preceding `$gt(<field>, null)` check, conjoined via
-    /// `$and`
+    /// Null-guards a `$match` predicate's `FieldRef`/`Variable` comparison operands.
+    ///
+    /// For a binary comparison (`Lt`/`Lte`/`Gt`/`Gte`/`Eq`/`Ne`), any `FieldRef` or `Variable`
+    /// operand is guarded by a preceding `$gt(<operand>, null)` check, conjoined via `$and` -
+    /// this is what keeps the comparison index-eligible (SARGable). A compound operand (a
+    /// nested SQL function call, a `CASE` expression, ...) is never index-eligible, and
+    /// guarding it here would mean evaluating it twice; if either side is compound, the whole
+    /// comparison is left as the original `SqlSemanticOperator` instead, so `desugar_sql_op`
+    /// null-guards it exactly once via its own `$let`/`$cond`.
+    ///
+    /// Also recurses into `And`/`Or` (applying the above to each argument) and `Switch` (CASE)
+    /// nodes (applying it independently to each branch's `case`/`then`/`default`). Any other
+    /// operator is left unchanged for the main desugarer pass to handle.
     fn null_guard_match_predicates(&mut self, node: Expression) -> Expression {
         match node {
             SqlSemanticOperator(sql_operator) => {
                 match sql_operator.op {
                     // For comparison operators we want to wrap the expression in an and statement
                     // that checks for null operands. Ultimately producing an expression like:
-                    // and ( <original operation>, ...gt(<operand>, null)) for any other field refs, or variables in the expression
+                    // and ( ...gt(<operand>, null) for any field refs or variables, <original operation> )
                     Lt | Lte | Gt | Gte | Eq | Ne => {
                         let lhs = sql_operator.args[0].clone();
                         let rhs = sql_operator.args[1].clone();
 
-                        // FieldRef/Variable/Literal are cheap enough to embed directly into a
-                        // hand-built Mql comparison. Anything else (a nested scalar/array
-                        // function call, a CASE expression, ...) is not - guarding it here
-                        // would mean evaluating it twice - so if either side isn't one of
-                        // these, keep the original comparison intact instead of rebuilding it,
-                        // so desugar_sql_op null-guards the compound side exactly once.
+                        // We use is_simple to determine if we can convert the comparison to MQL.
+                        // Literals, FieldRefs, and Variables are the only types where we will get
+                        // potential index usage, so we only convert those. Scalar functions and
+                        // other complex expressions don't qualify, so we just exclude them here.
                         let is_simple =
                             |e: &Expression| matches!(e, Literal(_) | FieldRef(_) | Variable(_));
-                        // Only FieldRef/Variable operands are worth an explicit guard here -
-                        // it's what keeps the comparison index-eligible.
+
+                        // Only FieldRef/Variable operands are worth guarding here - that's what
+                        // keeps the comparison index-eligible.
                         let requires_null_guard =
                             |e: &Expression| matches!(e, FieldRef(_) | Variable(_));
 
@@ -429,6 +437,14 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                     }
                     And | Or => {
                         // For logical operators we want to recursively call this function on the arguments
+                        //
+                        // Mapping SqlOperator::And/Or directly to MqlOperator::And/Or (instead of
+                        // going through desugar_sql_and/desugar_sql_or, which exist specifically
+                        // to preserve exact true/false/null distinctions in general expression
+                        // contexts) is safe *only* here: this function only ever runs on a
+                        // $match's $expr boolean predicate, where MQL's $and/$or already treat
+                        // null and false identically (both falsy) - exactly matching SQL's "null
+                        // or false excludes the row" filtering semantics.
                         let new_args: Vec<Expression> = sql_operator
                             .args
                             .into_iter()
@@ -444,7 +460,8 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                     _ => SqlSemanticOperator(sql_operator),
                 }
             }
-            // We match on the switch (Case statement) because we just want to wrap the expressions within the cases, not the entire statement
+            // A Switch (CASE expression) isn't itself a comparison, so recurse into each
+            // branch's case/then and the default, rewriting whichever of those are comparisons.
             Switch(switch_expr) => {
                 // 1. Call the function on each of the Switch Cases
                 let new_branches: Vec<SwitchCase> = switch_expr
@@ -524,7 +541,7 @@ impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
 }
 
 #[cfg(test)]
-mod tests {
+mod match_predicate_null_guard_tests {
     use super::*;
 
     fn visitor() -> SqlNullSemanticsOperatorsDesugarerVisitor {
@@ -677,6 +694,71 @@ mod tests {
                 ),
             ],
         );
+
+        let actual = visitor().null_guard_match_predicates(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn switch_case_and_then_branches_are_each_rewritten() {
+        // Each branch's `case` and `then` is rewritten independently; a comparison in either
+        // position gets the same guard treatment as it would at the top level.
+        let input = Switch(air::Switch {
+            branches: vec![SwitchCase {
+                case: Box::new(sql_op(air::SqlOperator::Lt, vec![field("a"), int(5)])),
+                then: Box::new(sql_op(air::SqlOperator::Gt, vec![field("b"), int(10)])),
+            }],
+            default: Box::new(int(0)),
+        });
+        let expected = Switch(air::Switch {
+            branches: vec![SwitchCase {
+                case: Box::new(mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("a"),
+                        mql_op(MqlOperator::Lt, vec![field("a"), int(5)]),
+                    ],
+                )),
+                then: Box::new(mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("b"),
+                        mql_op(MqlOperator::Gt, vec![field("b"), int(10)]),
+                    ],
+                )),
+            }],
+            default: Box::new(int(0)),
+        });
+
+        let actual = visitor().null_guard_match_predicates(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn switch_default_branch_is_rewritten() {
+        // The default branch is rewritten too, independently of the branches.
+        let input = Switch(air::Switch {
+            branches: vec![SwitchCase {
+                case: Box::new(Literal(LiteralValue::Boolean(true))),
+                then: Box::new(int(1)),
+            }],
+            default: Box::new(sql_op(air::SqlOperator::Lt, vec![field("a"), int(5)])),
+        });
+        let expected = Switch(air::Switch {
+            branches: vec![SwitchCase {
+                case: Box::new(Literal(LiteralValue::Boolean(true))),
+                then: Box::new(int(1)),
+            }],
+            default: Box::new(mql_op(
+                MqlOperator::And,
+                vec![
+                    null_guard("a"),
+                    mql_op(MqlOperator::Lt, vec![field("a"), int(5)]),
+                ],
+            )),
+        });
 
         let actual = visitor().null_guard_match_predicates(input);
 
