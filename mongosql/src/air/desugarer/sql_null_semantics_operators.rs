@@ -18,18 +18,12 @@ pub struct SqlNullSemanticsOperatorsDesugarerPass;
 
 impl Pass for SqlNullSemanticsOperatorsDesugarerPass {
     fn apply(&self, pipeline: air::Stage) -> Result<air::Stage> {
-        Ok(pipeline.walk(&mut SqlNullSemanticsOperatorsDesugarerVisitor::default()))
+        Ok(pipeline.walk(&mut SqlNullSemanticsOperatorsDesugarerVisitor))
     }
 }
 
 #[derive(Default)]
-struct SqlNullSemanticsOperatorsDesugarerVisitor {
-    /// True while visiting the `$expr` side of a `Match::ExprLanguage` node.
-    /// Binary comparisons and logical connectives are rewritten differently
-    /// in this context so that null guards remain index-eligible predicates
-    /// (a conjunction of comparisons) instead of a `$let`/`$cond` expression.
-    is_in_match_context: bool,
-}
+struct SqlNullSemanticsOperatorsDesugarerVisitor;
 
 impl SqlNullSemanticsOperatorsDesugarerVisitor {
     fn literal_check_args(
@@ -373,9 +367,7 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
     /// Given a binary comparison or logical-connective `SqlSemanticOperator`
     /// expression, rewrites it so that any field reference operand is
     /// null-guarded by a preceding `$gt(<field>, null)` check, conjoined via
-    /// `$and`. This lets the query planner use an index against the
-    /// resulting predicate, which a `$let`/`$cond` desugaring would not
-    /// allow. Only called while `is_in_match_context` is true.
+    /// `$and`
     fn rewrite_field_accesses_to_conjunction_of_null_guard(
         &mut self,
         node: Expression,
@@ -383,35 +375,33 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
         match node {
             SqlSemanticOperator(sql_operator) => {
                 match sql_operator.op {
-                    // For comparison operators we want to wrap the expression in an and statement and have a null guard for any field references
+                    // For comparison operators we want to wrap the expression in an and statement and have a null guard for any non-literal operand
                     Lt | Lte | Gt | Gte | Eq | Ne => {
                         // 1. Get the left hand side and right hand side of the expression
                         let lhs = sql_operator.args[0].clone();
                         let rhs = sql_operator.args[1].clone();
 
-                        // 2. For each field reference we greate a null guard for it.
-                        let field_reference_null_guards: Vec<Expression> =
-                            vec![lhs.clone(), rhs.clone()]
-                                .into_iter()
-                                .filter(|arg| matches!(arg, FieldRef(_)))
-                                .map(|field_reference| {
-                                    // Return an expression that checks if the field reference is null
-                                    MqlSemanticOperator(air::MqlSemanticOperator {
-                                        op: MqlOperator::Gt,
-                                        args: vec![field_reference, Literal(LiteralValue::Null)],
-                                    })
+                        // 2. For each non-literal operand we create a null guard for it.
+                        let null_guards: Vec<Expression> = vec![lhs.clone(), rhs.clone()]
+                            .into_iter()
+                            .filter(|arg| !matches!(arg, Literal(_)))
+                            .map(|operand| {
+                                // Return an expression that checks if the operand is null
+                                MqlSemanticOperator(air::MqlSemanticOperator {
+                                    op: MqlOperator::Gt,
+                                    args: vec![operand, Literal(LiteralValue::Null)],
                                 })
-                                .collect();
+                            })
+                            .collect();
 
                         // 3. Create a new $and expression that contains the null guards and the original expression
-                        let mut and_args = field_reference_null_guards;
+                        let mut and_args = null_guards;
                         and_args.push(MqlSemanticOperator(air::MqlSemanticOperator {
                             op: sql_op_to_mql_op(sql_operator.op).unwrap(),
                             args: vec![lhs, rhs],
                         }));
 
                         // Both operands were literals, so there is no guard to add.
-                        // Emit the bare operator rather than a single-element $and.
                         if and_args.len() == 1 {
                             return and_args.pop().unwrap();
                         }
@@ -450,10 +440,15 @@ impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
         match node {
             air::Match::ExprLanguage(air::ExprLanguage { source, expr }) => {
                 let source = self.visit_stage(*source);
-                let prev = self.is_in_match_context;
-                self.is_in_match_context = true;
-                let expr = self.visit_expression(*expr);
-                self.is_in_match_context = prev;
+                // Apply the null-guard rewrite directly to the raw $expr before it ever
+                // reaches visit_expression's dispatch, then run the standard dispatch over
+                // the result to desugar anything the rewrite left untouched (e.g. a Not, or
+                // an entire Reduce/subquery-comparison structure it correctly didn't descend
+                // into). This keeps the rewrite scoped to exactly the And/Or/comparison chain
+                // reachable from the match root, instead of leaking into unrelated nested
+                // constructs that depend on three-valued (true/null/false) semantics.
+                let expr = self.rewrite_field_accesses_to_conjunction_of_null_guard(*expr);
+                let expr = self.visit_expression(expr);
                 air::Match::ExprLanguage(air::ExprLanguage {
                     source: Box::new(source),
                     expr: Box::new(expr),
@@ -466,10 +461,6 @@ impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
     fn visit_expression(&mut self, node: Expression) -> Expression {
         let node = match node {
             SqlSemanticOperator(sql_operator) => match sql_operator.op {
-                Eq | Lt | Lte | Gt | Gte | Ne | And | Or if self.is_in_match_context => self
-                    .rewrite_field_accesses_to_conjunction_of_null_guard(SqlSemanticOperator(
-                        sql_operator,
-                    )),
                 And => self.desugar_sql_and(sql_operator),
                 Or => self.desugar_sql_or(sql_operator),
                 Eq | IndexOfCP | Lt | Lte | Gt | Gte | Ne | Not | Size | StrLenBytes | StrLenCP
@@ -501,12 +492,8 @@ impl Visitor for SqlNullSemanticsOperatorsDesugarerVisitor {
 mod tests {
     use super::*;
 
-    /// Visitor pre-set to match context. The flag itself is not under test here;
-    /// these tests exercise the rewrite logic in isolation.
     fn visitor() -> SqlNullSemanticsOperatorsDesugarerVisitor {
-        SqlNullSemanticsOperatorsDesugarerVisitor {
-            is_in_match_context: true,
-        }
+        SqlNullSemanticsOperatorsDesugarerVisitor
     }
 
     fn field(name: &str) -> Expression {

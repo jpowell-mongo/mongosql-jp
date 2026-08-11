@@ -1654,3 +1654,85 @@ tests:
               },
           },
       }
+
+  - name: "desugar $sqlNe with a nested non-literal operand null-guards the nested expression, not just field refs"
+    # Regression test for a correctness bug: the null guard must cover every non-literal
+    # operand (FieldRef, Variable, or a nested expression), not only FieldRef operands.
+    # $sqlStrLenCP("$a") can itself evaluate to null (e.g. if "$a" is null), so the guard
+    # must wrap the whole nested expression: without it, `$ne(<nullable>, 0)` evaluates to
+    # `true` in MQL when the nested expression is null, incorrectly passing rows that SQL's
+    # three-valued logic says should be excluded (NULL <> 0 is NULL, not true).
+    input:
+      - { "$match": { "$expr": { "$sqlNe": [{ "$sqlStrLenCP": ["$a"] }, 0] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    {
+                      "$gt":
+                        [
+                          {
+                            "$let":
+                              {
+                                "vars": { "desugared_sqlStrLenCP_input0": "$a" },
+                                "in":
+                                  {
+                                    "$cond":
+                                      [
+                                        {
+                                          "$lte":
+                                            [
+                                              "$$desugared_sqlStrLenCP_input0",
+                                              { "$literal": null },
+                                            ],
+                                        },
+                                        { "$literal": null },
+                                        {
+                                          "$strLenCP":
+                                            ["$$desugared_sqlStrLenCP_input0"],
+                                        },
+                                      ],
+                                  },
+                              },
+                          },
+                          { "$literal": null },
+                        ],
+                    },
+                    {
+                      "$ne":
+                        [
+                          {
+                            "$let":
+                              {
+                                "vars": { "desugared_sqlStrLenCP_input0": "$a" },
+                                "in":
+                                  {
+                                    "$cond":
+                                      [
+                                        {
+                                          "$lte":
+                                            [
+                                              "$$desugared_sqlStrLenCP_input0",
+                                              { "$literal": null },
+                                            ],
+                                        },
+                                        { "$literal": null },
+                                        {
+                                          "$strLenCP":
+                                            ["$$desugared_sqlStrLenCP_input0"],
+                                        },
+                                      ],
+                                  },
+                              },
+                          },
+                          0,
+                        ],
+                    },
+                  ],
+              },
+          },
+      }

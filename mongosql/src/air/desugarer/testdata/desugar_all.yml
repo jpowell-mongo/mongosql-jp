@@ -119,49 +119,25 @@ tests:
                 { "$project": { "_id": 0, "coll": "$coll" } },
                 {
                   "$match":
-                    { "$expr":
+                    {
+                      "$expr":
                         {
-                          "$let":
-                            {
-                              "vars":
-                                {
-                                  "desugared_sqlEq_input0": "$$bar_0.foo",
-                                  "desugared_sqlEq_input1": "$coll.car",
-                                },
-                              "in":
-                                {
-                                  "$cond":
-                                    [
-                                      "$or":
-                                        [
-                                          {
-                                            "$lte":
-                                              [
-                                                "$$desugared_sqlEq_input0",
-                                                { "$literal": null },
-                                              ],
-                                          },
-                                          {
-                                            "$lte":
-                                              [
-                                                "$$desugared_sqlEq_input1",
-                                                { "$literal": null },
-                                              ],
-                                          },
-                                        ],
-
-                                      { "$literal": null },
-
-                                      "$eq":
-                                        [
-                                          "$$desugared_sqlEq_input0",
-                                          "$$desugared_sqlEq_input1",
-                                        ],
-                                    ],
-                                },
-                            },
+                          "$and":
+                            [
+                              {
+                                "$gt":
+                                  ["$$bar_0.foo", { "$literal": null }],
+                              },
+                              {
+                                "$gt":
+                                  ["$coll.car", { "$literal": null }],
+                              },
+                              {
+                                "$eq": ["$$bar_0.foo", "$coll.car"],
+                              },
+                            ],
                         },
-                    }
+                    },
                 },
               ],
             "as": "eca58228-b657-498a-b76e-f48a9161a404",
