@@ -1528,6 +1528,61 @@ tests:
     expected:
       - { "$match": { "$expr": { "$ne": [1, 2] } } }
 
+  - name: "desugar $sqlEq in match stage adds null guard for field access"
+    input:
+      - { "$match": { "$expr": { "$sqlEq": ["$a", 5] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$eq": ["$a", 5] },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlLte in match stage adds null guards for both field accesses"
+    input:
+      - { "$match": { "$expr": { "$sqlLte": ["$a", "$b"] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$gt": ["$b", { "$literal": null }] },
+                    { "$lte": ["$a", "$b"] },
+                  ],
+              },
+          },
+      }
+
+  - name: "desugar $sqlNe in match stage with field ref adds null guard"
+    input:
+      - { "$match": { "$expr": { "$sqlNe": ["$a", 5] } } }
+    expected:
+      - {
+        "$match":
+          {
+            "$expr":
+              {
+                "$and":
+                  [
+                    { "$gt": ["$a", { "$literal": null }] },
+                    { "$ne": ["$a", 5] },
+                  ],
+              },
+          },
+      }
+
   - name: "desugar $sqlOr of binary comparisons in match stage adds null guards"
     input:
       - {

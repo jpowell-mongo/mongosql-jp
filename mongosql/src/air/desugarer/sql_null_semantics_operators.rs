@@ -428,7 +428,7 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                             args: and_args,
                         })
                     }
-                    And | Or => {
+                    And | Or | Not => {
                         // For logical operators we want to recursively call this function on the arguments.
                         // This function only ever runs on a $match's $expr boolean predicate, where MQL's $and/$or already treat
                         // null and false identically (both falsy) - exactly matching SQL's 3 value null semantics, so this is safe.
@@ -634,6 +634,40 @@ mod match_predicate_null_guard_tests {
         );
         let expected = mql_op(
             MqlOperator::Or,
+            vec![
+                mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("a"),
+                        mql_op(MqlOperator::Lt, vec![field("a"), int(10)]),
+                    ],
+                ),
+                mql_op(
+                    MqlOperator::And,
+                    vec![
+                        null_guard("b"),
+                        mql_op(MqlOperator::Gt, vec![field("b"), int(20)]),
+                    ],
+                ),
+            ],
+        );
+
+        let actual = visitor().null_guard_match_predicates(input);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn logical_operator_recurses_into_not_operand() {
+        let input = sql_op(
+            air::SqlOperator::Not,
+            vec![
+                sql_op(air::SqlOperator::Lt, vec![field("a"), int(10)]),
+                sql_op(air::SqlOperator::Gt, vec![field("b"), int(20)]),
+            ],
+        );
+        let expected = mql_op(
+            MqlOperator::Not,
             vec![
                 mql_op(
                     MqlOperator::And,
