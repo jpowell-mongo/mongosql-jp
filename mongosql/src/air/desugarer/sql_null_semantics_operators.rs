@@ -595,10 +595,6 @@ mod match_predicate_null_guard_tests {
 
     #[test]
     fn comparison_with_field_and_compound_operand_guards_field_and_defers_compound() {
-        // The rhs is a compound expression (not a FieldRef/Variable/Literal), so guarding it
-        // here would mean evaluating it twice. Instead, guard the field (cheap to repeat) and
-        // keep the original comparison intact so desugar_sql_op null-guards the compound side
-        // exactly once.
         let compound = sql_op(air::SqlOperator::StrLenCP, vec![field("b")]);
         let input = sql_op(air::SqlOperator::Ne, vec![field("a"), compound.clone()]);
         let expected = mql_op(
