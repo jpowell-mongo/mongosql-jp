@@ -379,9 +379,6 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                     // that checks for null operands. Ultimately producing an expression like:
                     // and ( ...gt(<operand>, null) for any field refs or variables, <original operation> )
                     Lt | Lte | Gt | Gte | Eq | Ne => {
-                        let lhs = sql_operator.args[0].clone();
-                        let rhs = sql_operator.args[1].clone();
-
                         // We use is_simple to determine if we can convert the comparison to MQL.
                         // Literals, FieldRefs and variables could potentially use an index so we consider those.
                         // Scalar functions and other complex expressions don't qualify, so we just exclude them here.
@@ -393,10 +390,25 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                         let requires_null_guard =
                             |e: &Expression| matches!(e, FieldRef(_) | Variable(_));
 
-                        // 1. For each operand that requires a null guard we create one for it.
-                        let mut and_args: Vec<Expression> = vec![&lhs, &rhs]
+                        let lhs = sql_operator.args[0].clone();
+                        let rhs = sql_operator.args[1].clone();
+
+                        // Rebuild the comparison itself as raw MQL only if both sides
+                        // are simple; otherwise defer it, unchanged, so desugar_sql_op
+                        // can handle the compound operand later. Guarding (below) must
+                        // still happen independently of this decision.
+                        let comparison = if is_simple(&lhs) && is_simple(&rhs) {
+                            MqlSemanticOperator(air::MqlSemanticOperator {
+                                op: sql_op_to_mql_op(sql_operator.op).unwrap(),
+                                args: sql_operator.args, // or, `vec![lhs, rhs]`
+                            })
+                        } else {
+                            SqlSemanticOperator(sql_operator)
+                        };
+
+                        let and_args: Vec<Expression> = [&lhs, &rhs]
                             .into_iter()
-                            .filter(|arg| requires_null_guard(arg))
+                            .filter(|expr| requires_null_guard(expr))
                             .cloned()
                             .map(|operand| {
                                 // Return an expression that checks if the operand is null
@@ -405,22 +417,14 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                                     args: vec![operand, Literal(LiteralValue::Null)],
                                 })
                             })
+                            // Append the original comparison to the end of the list of null guards
+                            .chain(std::iter::once(comparison))
                             .collect();
 
-                        // 2. Add the comparison itself: rebuilt as Mql if both sides are simple,
-                        // otherwise left as the original Sql operator for desugar_sql_op to handle.
-                        and_args.push(if is_simple(&lhs) && is_simple(&rhs) {
-                            MqlSemanticOperator(air::MqlSemanticOperator {
-                                op: sql_op_to_mql_op(sql_operator.op).unwrap(),
-                                args: vec![lhs, rhs],
-                            })
-                        } else {
-                            SqlSemanticOperator(sql_operator)
-                        });
-
-                        // No guard was added, so there is nothing to conjoin.
+                        // If no operand needed a null guard, return the bare
+                        // comparison rather than wrapping it in a 1-arg $and.
                         if and_args.len() == 1 {
-                            return and_args.pop().unwrap();
+                            return and_args.into_iter().next().unwrap();
                         }
 
                         MqlSemanticOperator(air::MqlSemanticOperator {
