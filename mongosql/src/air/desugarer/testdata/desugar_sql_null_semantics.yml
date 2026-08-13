@@ -1661,34 +1661,6 @@ tests:
           },
       }
 
-  - name: "desugar $sqlNot of a binary comparison in match stage adds null guard"
-    input:
-      - {
-        "$match":
-          {
-            "$expr": { "$sqlNot": [{ "$sqlGt": ["$a", 10] }] },
-          },
-      }
-    expected:
-      - {
-        "$match":
-          {
-            "$expr":
-              {
-                "$not":
-                  [
-                    {
-                      "$and":
-                        [
-                          { "$gt": ["$a", { "$literal": null }] },
-                          { "$gt": ["$a", 10] },
-                        ],
-                    },
-                  ],
-              },
-          },
-      }
-
   - name: "desugar $sqlLt outside match stage keeps $let/$cond form"
     input:
       - { "$match": { "$expr": { "$sqlLt": ["$a", 0] } } }

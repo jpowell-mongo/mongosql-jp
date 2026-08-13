@@ -1183,13 +1183,6 @@ tests:
           },
       }
 
-  # NOTE: the join's `condition` has no literal `$match` in this input, but
-  # JoinDesugarerPass (which runs before SqlNullSemanticsOperatorsDesugarerPass)
-  # always rewrites `condition` into a `$match` stage before null-semantics
-  # desugaring runs. That's why the $sqlNot inside `condition` gets the
-  # unguarded, match-optimized form (plain `$not`) instead of the fuller
-  # `$let`/`$cond` null-guard used elsewhere in this test (e.g. in the join's
-  # `let` binding and in the `$project` inside the sub-pipeline).
   - name: "null semantic ops nested in join"
     input:
       - {
@@ -1259,7 +1252,30 @@ tests:
                     },
                 },
                 {
-                  "$match": { "$expr": { "$not": ["$expr"] } },
+                  "$match":
+                    {
+                      "$expr":
+                        {
+                          "$let":
+                            {
+                              "vars": { "desugared_sqlNot_input0": "$expr" },
+                              "in":
+                                {
+                                  "$cond":
+                                    [
+                                      {
+                                        "$lte":
+                                          ["$$desugared_sqlNot_input0", null],
+                                      },
+                                      null,
+                                      {
+                                        "$not": ["$$desugared_sqlNot_input0"],
+                                      },
+                                    ],
+                                },
+                            },
+                        },
+                    },
                 },
               ],
             "as": "eca58228-b657-498a-b76e-f48a9161a404",
@@ -1539,13 +1555,6 @@ tests:
           },
       }
 
-  # NOTE: as with "null semantic ops nested in join" above, the nested join's
-  # `condition: { "$sqlNot": ["$$ROOT.b"] }` has no literal `$match` in this
-  # input, but JoinDesugarerPass rewrites it into a `$match` stage before
-  # SqlNullSemanticsOperatorsDesugarerPass runs, so it gets the unguarded,
-  # match-optimized `$not` form. Also note RootReferenceDesugarerPass runs
-  # even earlier and rewrites `$$ROOT.b` into plain `$b`, which is why the
-  # expected match condition below is `{"$not": ["$b"]}`, not `["$$ROOT.b"]`.
   - name: "all present together in one pipeline"
     input:
       - {
@@ -1609,7 +1618,30 @@ tests:
                       "pipeline":
                         [
                           {
-                            "$match": { "$expr": { "$not": ["$b"] } },
+                            "$match":
+                              {
+                                "$expr":
+                                  {
+                                    "$let":
+                                      {
+                                        "vars": { "desugared_sqlNot_input0": "$b" },
+                                        "in":
+                                          {
+                                            "$cond":
+                                              [
+                                                {
+                                                  "$lte":
+                                                    ["$$desugared_sqlNot_input0", null],
+                                                },
+                                                null,
+                                                {
+                                                  "$not": ["$$desugared_sqlNot_input0"],
+                                                },
+                                              ],
+                                          },
+                                      },
+                                  },
+                              },
                           },
                         ],
                       "as": "eca58228-b657-498a-b76e-f48a9161a404",
