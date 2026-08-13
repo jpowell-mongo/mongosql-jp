@@ -1,12 +1,13 @@
 mod merge_neighboring_matches_tests {
     use crate::{
-        map,
+        map, mir,
         mir::{
             binding_tuple::DatasourceName::Bottom, schema::SchemaCache, Expression::*,
             LiteralValue::*,
         },
         set, unchecked_unique_linked_hash_map, util,
     };
+    use mongosql_datastructures::binding_tuple::Key;
 
     macro_rules! test_merge_neighboring_matches {
         ($func_name:ident, expected = $expected:expr, input = $input:expr,) => {
@@ -74,6 +75,272 @@ mod merge_neighboring_matches_tests {
             condition: Literal(Integer(2)),
             cache: SchemaCache::new(),
         }),
+    );
+
+    #[cfg(test)]
+    pub(crate) fn mir_collection(db_name: &str, collection_name: &str) -> Box<mir::Stage> {
+        Box::new(mir::Stage::Collection(mir::Collection {
+            db: db_name.to_string(),
+            collection: collection_name.to_string(),
+            cache: mir::schema::SchemaCache::new(),
+        }))
+    }
+
+    #[cfg(test)]
+    fn make_key(key_name: &str) -> Key {
+        if key_name == "__bot__" {
+            Key::bot(0)
+        } else {
+            Key::named(key_name, 0)
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn mir_field_path(datasource_name: &str, field_names: Vec<&str>) -> mir::FieldPath {
+        mir::FieldPath::new(
+            make_key(datasource_name),
+            field_names
+                .into_iter()
+                .map(std::string::String::from)
+                .collect(),
+        )
+    }
+
+    test_merge_neighboring_matches!(
+        two_match_filters_get_merged,
+        expected = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+            source: Box::new(Stage::Sentinel),
+            condition: MatchQuery::Logical(MatchLanguageLogical {
+                op: MatchLanguageLogicalOp::And,
+                args: vec![
+                    MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(mir_field_path("foo", vec!["x"])),
+                        arg: LiteralValue::Integer(42),
+                        cache: Default::default(),
+                    }),
+                    MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(mir_field_path("bar", vec!["y"])),
+                        arg: LiteralValue::Integer(43),
+                        cache: SchemaCache::new(),
+                    })
+                ],
+                cache: SchemaCache::new(),
+            }),
+            cache: SchemaCache::new(),
+        }))),
+        input = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+            source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+                MatchFilter {
+                    source: Box::new(Stage::Sentinel),
+                    condition: MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(mir_field_path("foo", vec!["x"])),
+                        arg: LiteralValue::Integer(42),
+                        cache: Default::default(),
+                    }),
+                    cache: Default::default(),
+                }
+            )))),
+            condition: MatchQuery::Comparison(MatchLanguageComparison {
+                function: MatchLanguageComparisonOp::Eq,
+                input: Some(mir_field_path("bar", vec!["y"])),
+                arg: LiteralValue::Integer(43),
+                cache: SchemaCache::new(),
+            }),
+            cache: SchemaCache::new(),
+        }))),
+    );
+
+    test_merge_neighboring_matches!(
+        two_non_adjacent_match_filters_not_merged,
+        expected = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+            source: Box::new(Stage::Project(Project {
+                is_add_fields: false,
+                source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+                    MatchFilter {
+                        source: Box::new(Stage::Sentinel),
+                        condition: MatchQuery::Comparison(MatchLanguageComparison {
+                            function: MatchLanguageComparisonOp::Eq,
+                            input: Some(mir_field_path("foo", vec!["x"])),
+                            arg: LiteralValue::Integer(1),
+                            cache: Default::default(),
+                        }),
+                        cache: SchemaCache::new(),
+                    }
+                )))),
+                expression: map! {
+                    (Bottom, 0u16).into() => Expression::Document(DocumentExpr {
+                        document: unchecked_unique_linked_hash_map! {
+                            "c".to_string() =>
+                            Expression::Literal(LiteralValue::Integer(1),),
+                        },
+                    }),
+                },
+                cache: SchemaCache::new(),
+            })),
+            condition: MatchQuery::Comparison(MatchLanguageComparison {
+                function: MatchLanguageComparisonOp::Eq,
+                input: Some(mir_field_path("bar", vec!["y"])),
+                arg: LiteralValue::Integer(3),
+                cache: Default::default(),
+            }),
+            cache: SchemaCache::new(),
+        }))),
+        input = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+            source: Box::new(Stage::Project(Project {
+                is_add_fields: false,
+                source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+                    MatchFilter {
+                        source: Box::new(Stage::Sentinel),
+                        condition: MatchQuery::Comparison(MatchLanguageComparison {
+                            function: MatchLanguageComparisonOp::Eq,
+                            input: Some(mir_field_path("foo", vec!["x"])),
+                            arg: LiteralValue::Integer(1),
+                            cache: Default::default(),
+                        }),
+                        cache: SchemaCache::new(),
+                    }
+                )))),
+                expression: map! {
+                    (Bottom, 0u16).into() => Expression::Document(DocumentExpr {
+                        document: unchecked_unique_linked_hash_map! {
+                            "c".to_string() =>
+                            Expression::Literal(LiteralValue::Integer(1),),
+                        },
+                    }),
+                },
+                cache: SchemaCache::new(),
+            })),
+            condition: MatchQuery::Comparison(MatchLanguageComparison {
+                function: MatchLanguageComparisonOp::Eq,
+                input: Some(mir_field_path("bar", vec!["y"])),
+                arg: LiteralValue::Integer(3),
+                cache: Default::default(),
+            }),
+            cache: SchemaCache::new(),
+        }))),
+    );
+
+    // Two Match Filters: Filter(A), Filter(B) - Project(C) followed by a project, followed by two more match filters
+    // Filter(C), Filter(D)
+    // Expect it to become Filter(A,B), Project(C), Filter(C,D)
+    test_merge_neighboring_matches!(
+        nested_match_filters_merged_through_project,
+        expected = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+            source: Box::new(Stage::Project(Project {
+                is_add_fields: false,
+                source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+                    MatchFilter {
+                        source: Box::new(Stage::Sentinel),
+                        condition: MatchQuery::Logical(MatchLanguageLogical {
+                            op: MatchLanguageLogicalOp::And,
+                            args: vec![
+                                MatchQuery::Comparison(MatchLanguageComparison {
+                                    function: MatchLanguageComparisonOp::Eq,
+                                    input: Some(mir_field_path("foo", vec!["a"])),
+                                    arg: LiteralValue::Integer(1),
+                                    cache: Default::default(),
+                                }),
+                                MatchQuery::Comparison(MatchLanguageComparison {
+                                    function: MatchLanguageComparisonOp::Eq,
+                                    input: Some(mir_field_path("foo", vec!["b"])),
+                                    arg: LiteralValue::Integer(2),
+                                    cache: Default::default(),
+                                }),
+                            ],
+                            cache: SchemaCache::new(),
+                        }),
+                        cache: SchemaCache::new(),
+                    }
+                )))),
+                expression: map! {
+                    (Bottom, 0u16).into() => Expression::Document(DocumentExpr {
+                        document: unchecked_unique_linked_hash_map! {
+                            "c".to_string() =>
+                            Expression::Literal(LiteralValue::Integer(1),),
+                        },
+                    }),
+                },
+                cache: SchemaCache::new(),
+            })),
+            condition: MatchQuery::Logical(MatchLanguageLogical {
+                op: MatchLanguageLogicalOp::And,
+                args: vec![
+                    MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(mir_field_path("bar", vec!["c"])),
+                        arg: LiteralValue::Integer(3),
+                        cache: Default::default(),
+                    }),
+                    MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(mir_field_path("bar", vec!["d"])),
+                        arg: LiteralValue::Integer(4),
+                        cache: SchemaCache::new(),
+                    }),
+                ],
+                cache: SchemaCache::new(),
+            }),
+            cache: SchemaCache::new(),
+        }))),
+        input = Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(MatchFilter {
+            source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+                MatchFilter {
+                    source: Box::new(Stage::Project(Project {
+                        is_add_fields: false,
+                        source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(Box::new(
+                            MatchFilter {
+                                source: Box::new(Stage::MqlIntrinsic(MqlStage::MatchFilter(
+                                    Box::new(MatchFilter {
+                                        source: Box::new(Stage::Sentinel),
+                                        condition: MatchQuery::Comparison(
+                                            MatchLanguageComparison {
+                                                function: MatchLanguageComparisonOp::Eq,
+                                                input: Some(mir_field_path("foo", vec!["a"])),
+                                                arg: LiteralValue::Integer(1),
+                                                cache: Default::default(),
+                                            }
+                                        ),
+                                        cache: Default::default(),
+                                    })
+                                ))),
+                                condition: MatchQuery::Comparison(MatchLanguageComparison {
+                                    function: MatchLanguageComparisonOp::Eq,
+                                    input: Some(mir_field_path("foo", vec!["b"])),
+                                    arg: LiteralValue::Integer(2),
+                                    cache: Default::default(),
+                                }),
+                                cache: Default::default(),
+                            }
+                        )))),
+                        expression: map! {
+                            (Bottom, 0u16).into() => Expression::Document(DocumentExpr {
+                                document: unchecked_unique_linked_hash_map! {
+                                    "c".to_string() =>
+                                    Expression::Literal(LiteralValue::Integer(1),),
+                                },
+                            }),
+                        },
+                        cache: SchemaCache::new(),
+                    })),
+                    condition: MatchQuery::Comparison(MatchLanguageComparison {
+                        function: MatchLanguageComparisonOp::Eq,
+                        input: Some(mir_field_path("bar", vec!["c"])),
+                        arg: LiteralValue::Integer(3),
+                        cache: Default::default(),
+                    }),
+                    cache: Default::default(),
+                }
+            )))),
+            condition: MatchQuery::Comparison(MatchLanguageComparison {
+                function: MatchLanguageComparisonOp::Eq,
+                input: Some(mir_field_path("bar", vec!["d"])),
+                arg: LiteralValue::Integer(4),
+                cache: Default::default(),
+            }),
+            cache: Default::default(),
+        }))),
     );
 
     test_merge_neighboring_matches!(

@@ -11,6 +11,7 @@ mod test;
 
 use super::Optimizer;
 use crate::mir::optimizer::util::ContainsSubqueryVisitor;
+use crate::mir::{MatchFilter, MatchLanguageLogical, MatchLanguageLogicalOp, MatchQuery, MqlStage};
 use crate::{
     mir::{
         schema::SchemaInferenceState, visitor::Visitor, Expression, Filter, ScalarFunction,
@@ -56,6 +57,45 @@ impl MergeNeighboringMatchesVisitor {
 }
 
 impl Visitor for MergeNeighboringMatchesVisitor {
+    fn visit_mql_stage(&mut self, node: MqlStage) -> MqlStage {
+        match node {
+            MqlStage::MatchFilter(match_filter) => {
+                let match_filter = self.visit_match_filter(*match_filter);
+                match match_filter.source.as_ref() {
+                    Stage::MqlIntrinsic(MqlStage::MatchFilter(child)) => {
+                        let conditions = match &child.condition {
+                            // the child is already a $and, append this condition to that and
+                            // instead of nesting a new $and inside it
+                            MatchQuery::Logical(MatchLanguageLogical {
+                                op: MatchLanguageLogicalOp::And,
+                                args,
+                                ..
+                            }) => {
+                                let mut conditions = args.clone();
+                                conditions.push(match_filter.condition.clone());
+                                conditions
+                            }
+                            // otherwise, create a $and with the two match filter conditions
+                            _ => vec![child.condition.clone(), match_filter.condition.clone()],
+                        };
+                        MqlStage::MatchFilter(Box::new(MatchFilter {
+                            source: child.source.clone(),
+                            condition: MatchQuery::Logical(MatchLanguageLogical {
+                                op: MatchLanguageLogicalOp::And,
+                                args: conditions,
+                                cache: Default::default(),
+                            }),
+                            cache: match_filter.cache.clone(),
+                        }))
+                    }
+                    // nothing to merge, return the filter as-is
+                    _ => MqlStage::MatchFilter(Box::new(match_filter)),
+                }
+            }
+            _ => node.walk(self),
+        }
+    }
+
     fn visit_filter(&mut self, node: Filter) -> Filter {
         let node = node.walk(self);
         match node.source.as_ref() {
