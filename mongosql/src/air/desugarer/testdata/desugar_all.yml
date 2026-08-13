@@ -1252,29 +1252,7 @@ tests:
                     },
                 },
                 {
-                  "$match":
-                    { "$expr":
-                        {
-                          "$let":
-                            {
-                              "vars": { "desugared_sqlNot_input0": "$expr" },
-                              "in":
-                                {
-                                  "$cond":
-                                    [
-                                      "$lte":
-                                        [
-                                          "$$desugared_sqlNot_input0",
-                                          { "$literal": null },
-                                        ],
-
-                                      { "$literal": null },
-                                      { "$not": [ "$$desugared_sqlNot_input0" ] },
-                                    ],
-                                },
-                            },
-                        }
-                    }
+                  "$match": { "$expr": { "$not": ["$expr"] } },
                 },
               ],
             "as": "eca58228-b657-498a-b76e-f48a9161a404",
@@ -1617,30 +1595,7 @@ tests:
                       "pipeline":
                         [
                           {
-                            "$match":
-                              {
-                                "$expr":
-                                  {
-                                    "$let":
-                                      {
-                                        "vars": { "desugared_sqlNot_input0": "$b" },
-                                        "in":
-                                          {
-                                            "$cond":
-                                              [
-                                                "$lte":
-                                                  [
-                                                    "$$desugared_sqlNot_input0",
-                                                    { "$literal": null },
-                                                  ],
-
-                                                { "$literal": null },
-                                                { "$not": [ "$$desugared_sqlNot_input0" ] },
-                                              ],
-                                          },
-                                      },
-                                  }
-                              }
+                            "$match": { "$expr": { "$not": ["$b"] } },
                           },
                         ],
                       "as": "eca58228-b657-498a-b76e-f48a9161a404",
