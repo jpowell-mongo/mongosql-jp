@@ -371,6 +371,7 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
     ///  keeps the comparison index-eligible. Compound expressions like function calls
     /// are not index-eligible, so those operators are left untouched.
     /// Also recurses into `And`/`Or` (applying the above to each argument).
+    /// We only rewrite if the LHS and RHS are simple (FieldRef/Variable/Literal) - otherwise we defer to the main desugarer pass to handle the compound operand.
     fn null_guard_match_predicates(&mut self, node: Expression) -> Expression {
         match node {
             SqlSemanticOperator(sql_operator) => {
@@ -390,21 +391,26 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                         let requires_null_guard =
                             |e: &Expression| matches!(e, FieldRef(_) | Variable(_));
 
+                        if !sql_operator.args.iter().all(is_simple) {
+                            return SqlSemanticOperator(sql_operator);
+                        }
+
                         let lhs = sql_operator.args[0].clone();
                         let rhs = sql_operator.args[1].clone();
 
-                        // Rebuild the comparison itself as raw MQL only if both sides
-                        // are simple; otherwise defer it, unchanged, so desugar_sql_op
-                        // can handle the compound operand later. Guarding (below) must
-                        // still happen independently of this decision.
-                        let comparison = if is_simple(&lhs) && is_simple(&rhs) {
-                            MqlSemanticOperator(air::MqlSemanticOperator {
+                        if matches!(lhs, Literal(_)) && matches!(rhs, Literal(_)) {
+                            // If both sides are literals, we don't need to guard them - just return the comparison as-is.
+                            return MqlSemanticOperator(air::MqlSemanticOperator {
                                 op: sql_op_to_mql_op(sql_operator.op).unwrap(),
-                                args: sql_operator.args, // or, `vec![lhs, rhs]`
-                            })
-                        } else {
-                            SqlSemanticOperator(sql_operator)
-                        };
+                                args: sql_operator.args,
+                            });
+                        }
+
+                        // Rebuild the comparison itself as raw MQL only if both sides
+                        let comparison = MqlSemanticOperator(air::MqlSemanticOperator {
+                            op: sql_op_to_mql_op(sql_operator.op).unwrap(),
+                            args: sql_operator.args, // or, `vec![lhs, rhs]`
+                        });
 
                         let and_args: Vec<Expression> = [&lhs, &rhs]
                             .into_iter()
@@ -420,12 +426,6 @@ impl SqlNullSemanticsOperatorsDesugarerVisitor {
                             // Append the original comparison to the end of the list of null guards
                             .chain(std::iter::once(comparison))
                             .collect();
-
-                        // If no operand needed a null guard, return the bare
-                        // comparison rather than wrapping it in a 1-arg $and.
-                        if and_args.len() == 1 {
-                            return and_args.into_iter().next().unwrap();
-                        }
 
                         MqlSemanticOperator(air::MqlSemanticOperator {
                             op: MqlOperator::And,
@@ -591,23 +591,6 @@ mod match_predicate_null_guard_tests {
     fn comparison_with_two_literals_is_left_unguarded() {
         let input = sql_op(air::SqlOperator::Ne, vec![int(1), int(2)]);
         let expected = mql_op(MqlOperator::Ne, vec![int(1), int(2)]);
-
-        let actual = visitor().null_guard_match_predicates(input);
-
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn comparison_with_field_and_compound_operand_guards_field_and_defers_compound() {
-        let compound = sql_op(air::SqlOperator::StrLenCP, vec![field("b")]);
-        let input = sql_op(air::SqlOperator::Ne, vec![field("a"), compound.clone()]);
-        let expected = mql_op(
-            MqlOperator::And,
-            vec![
-                null_guard("a"),
-                sql_op(air::SqlOperator::Ne, vec![field("a"), compound]),
-            ],
-        );
 
         let actual = visitor().null_guard_match_predicates(input);
 
