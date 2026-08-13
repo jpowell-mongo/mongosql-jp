@@ -78,15 +78,6 @@ mod merge_neighboring_matches_tests {
     );
 
     #[cfg(test)]
-    pub(crate) fn mir_collection(db_name: &str, collection_name: &str) -> Box<mir::Stage> {
-        Box::new(mir::Stage::Collection(mir::Collection {
-            db: db_name.to_string(),
-            collection: collection_name.to_string(),
-            cache: mir::schema::SchemaCache::new(),
-        }))
-    }
-
-    #[cfg(test)]
     fn make_key(key_name: &str) -> Key {
         if key_name == "__bot__" {
             Key::bot(0)
