@@ -78,12 +78,11 @@ impl Visitor for MergeNeighboringMatchesVisitor {
                     // instead of nesting a new $and inside it
                     MatchQuery::Logical(MatchLanguageLogical {
                         op: MatchLanguageLogicalOp::And,
-                        args,
+                        mut args,
                         ..
                     }) => {
-                        let mut conditions = args;
-                        conditions.push(this_condition);
-                        conditions
+                        args.push(this_condition);
+                        args
                     }
                     // otherwise, create a vector with the child condition, and the condition of this filter
                     combined_conditions => vec![combined_conditions, this_condition],
