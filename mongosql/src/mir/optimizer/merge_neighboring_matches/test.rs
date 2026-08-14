@@ -1,4 +1,5 @@
 mod merge_neighboring_matches_tests {
+    use crate::util::mir_field_path;
     use crate::{
         map,
         mir::{
@@ -7,7 +8,6 @@ mod merge_neighboring_matches_tests {
         },
         set, unchecked_unique_linked_hash_map, util,
     };
-    use crate::util::mir_field_path;
 
     macro_rules! test_merge_neighboring_matches {
         ($func_name:ident, expected = $expected:expr, input = $input:expr,) => {
