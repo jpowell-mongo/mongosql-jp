@@ -60,20 +60,20 @@ impl Visitor for MergeNeighboringMatchesVisitor {
     fn visit_match_filter(&mut self, node: MatchFilter) -> MatchFilter {
         // Recurse first so that we've already merged children before we try to merge this node.
         let MatchFilter {
-            source,
-            condition,
-            cache,
+            source: this_source,
+            condition: this_condition,
+            cache: this_cache,
         } = node.walk(self);
-        match *source {
+        match *this_source {
             Stage::MqlIntrinsic(MqlStage::MatchFilter(child)) => {
                 let MatchFilter {
-                    source: child_source,
-                    condition: child_condition,
+                    source: other_source,
+                    condition: other_condition,
                     ..
                 } = *child;
 
                 // Combine the child condition with the parent condition
-                let conditions: Vec<MatchQuery> = match child_condition {
+                let conditions: Vec<MatchQuery> = match other_condition {
                     // the child is already a $and, append this condition to that and
                     // instead of nesting a new $and inside it
                     MatchQuery::Logical(MatchLanguageLogical {
@@ -82,27 +82,27 @@ impl Visitor for MergeNeighboringMatchesVisitor {
                         ..
                     }) => {
                         let mut conditions = args;
-                        conditions.push(condition);
+                        conditions.push(this_condition);
                         conditions
                     }
                     // otherwise, create a vector with the child condition, and the condition of this filter
-                    child_match_query => vec![child_match_query, condition],
+                    combined_conditions => vec![combined_conditions, this_condition],
                 };
                 MatchFilter {
-                    source: child_source,
+                    source: other_source,
                     condition: MatchQuery::Logical(MatchLanguageLogical {
                         op: MatchLanguageLogicalOp::And,
                         args: conditions,
                         cache: Default::default(),
                     }),
-                    cache,
+                    cache: this_cache,
                 }
             }
             // nothing to merge; rebuild the filter from its own (unchanged) fields
             other => MatchFilter {
                 source: Box::new(other),
-                condition,
-                cache,
+                condition: this_condition,
+                cache: this_cache,
             },
         }
     }
