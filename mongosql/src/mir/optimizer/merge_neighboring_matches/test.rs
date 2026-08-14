@@ -1,13 +1,13 @@
 mod merge_neighboring_matches_tests {
     use crate::{
-        map, mir,
+        map,
         mir::{
             binding_tuple::DatasourceName::Bottom, schema::SchemaCache, Expression::*,
             LiteralValue::*,
         },
         set, unchecked_unique_linked_hash_map, util,
     };
-    use mongosql_datastructures::binding_tuple::Key;
+    use crate::util::mir_field_path;
 
     macro_rules! test_merge_neighboring_matches {
         ($func_name:ident, expected = $expected:expr, input = $input:expr,) => {
@@ -76,25 +76,6 @@ mod merge_neighboring_matches_tests {
             cache: SchemaCache::new(),
         }),
     );
-
-    #[cfg(test)]
-    fn make_key(key_name: &str) -> Key {
-        if key_name == "__bot__" {
-            Key::bot(0)
-        } else {
-            Key::named(key_name, 0)
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn mir_field_path(datasource_name: &str, field_names: Vec<&str>) -> mir::FieldPath {
-        mir::FieldPath::new(
-            make_key(datasource_name),
-            field_names
-                .into_iter()
-                .map(std::string::String::from)
-                .collect(),
-        )
-    }
 
     test_merge_neighboring_matches!(
         two_match_filters_get_merged,
