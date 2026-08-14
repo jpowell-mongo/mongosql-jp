@@ -57,42 +57,53 @@ impl MergeNeighboringMatchesVisitor {
 }
 
 impl Visitor for MergeNeighboringMatchesVisitor {
-    fn visit_mql_stage(&mut self, node: MqlStage) -> MqlStage {
-        match node {
-            MqlStage::MatchFilter(match_filter) => {
-                let match_filter = self.visit_match_filter(*match_filter);
-                match match_filter.source.as_ref() {
-                    Stage::MqlIntrinsic(MqlStage::MatchFilter(child)) => {
-                        let conditions = match &child.condition {
-                            // the child is already a $and, append this condition to that and
-                            // instead of nesting a new $and inside it
-                            MatchQuery::Logical(MatchLanguageLogical {
-                                op: MatchLanguageLogicalOp::And,
-                                args,
-                                ..
-                            }) => {
-                                let mut conditions = args.clone();
-                                conditions.push(match_filter.condition.clone());
-                                conditions
-                            }
-                            // otherwise, create a $and with the two match filter conditions
-                            _ => vec![child.condition.clone(), match_filter.condition.clone()],
-                        };
-                        MqlStage::MatchFilter(Box::new(MatchFilter {
-                            source: child.source.clone(),
-                            condition: MatchQuery::Logical(MatchLanguageLogical {
-                                op: MatchLanguageLogicalOp::And,
-                                args: conditions,
-                                cache: Default::default(),
-                            }),
-                            cache: match_filter.cache.clone(),
-                        }))
+    fn visit_match_filter(&mut self, node: MatchFilter) -> MatchFilter {
+        // Recurse first so that we've already merged children before we try to merge this node.
+        let MatchFilter {
+            source,
+            condition,
+            cache,
+        } = node.walk(self);
+        match *source {
+            Stage::MqlIntrinsic(MqlStage::MatchFilter(child)) => {
+                let MatchFilter {
+                    source: child_source,
+                    condition: child_condition,
+                    ..
+                } = *child;
+
+                // Combine the child condition with the parent condition
+                let conditions: Vec<MatchQuery> = match child_condition {
+                    // the child is already a $and, append this condition to that and
+                    // instead of nesting a new $and inside it
+                    MatchQuery::Logical(MatchLanguageLogical {
+                        op: MatchLanguageLogicalOp::And,
+                        args,
+                        ..
+                    }) => {
+                        let mut conditions = args;
+                        conditions.push(condition);
+                        conditions
                     }
-                    // nothing to merge, return the filter as-is
-                    _ => MqlStage::MatchFilter(Box::new(match_filter)),
+                    // otherwise, create a vector with the child condition, and the condition of this filter
+                    child_match_query => vec![child_match_query, condition],
+                };
+                MatchFilter {
+                    source: child_source,
+                    condition: MatchQuery::Logical(MatchLanguageLogical {
+                        op: MatchLanguageLogicalOp::And,
+                        args: conditions,
+                        cache: Default::default(),
+                    }),
+                    cache,
                 }
             }
-            _ => node.walk(self),
+            // nothing to merge; rebuild the filter from its own (unchanged) fields
+            other => MatchFilter {
+                source: Box::new(other),
+                condition,
+                cache,
+            },
         }
     }
 
