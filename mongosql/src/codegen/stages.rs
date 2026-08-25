@@ -23,8 +23,13 @@ impl MqlCodeGenerator {
             air::Stage::Documents(d) => self.codegen_documents(d),
             air::Stage::EquiJoin(j) => self.codegen_equijoin(j),
             air::Stage::EquiLookup(l) => self.codegen_equilookup(l),
+            air::Stage::SetWindowFields(s) => self.codegen_set_window_fields(s),
             air::Stage::Sentinel => unreachable!(),
         }
+    }
+
+    fn codegen_set_window_fields(&self, air_set_window_fields: air::SetWindowFields) -> Result<MqlTranslation> {
+        unimplemented!()
     }
 
     fn codegen_union_with(&self, air_union_with: air::UnionWith) -> Result<MqlTranslation> {

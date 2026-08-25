@@ -21,8 +21,52 @@ pub enum Stage {
     Documents(Documents),
     EquiJoin(EquiJoin),
     EquiLookup(EquiLookup),
+    SetWindowFields(SetWindowFields),
     Sentinel
 }
+
+/// Begin: $setWindowField type definitions
+/// TODO review the restrictions here: https://www.mongodb.com/docs/manual/reference/operator/aggregation/setWindowFields/#restrictions
+/// Figure out if we can encode them into the type system itself, so we always construct valid SetWindowField expressions
+#[derive(PartialEq, Debug, Clone)]
+pub enum WindowBoundary {
+        Unbounded,
+        CurrentRow,
+        NumericBoundary(i64),
+}
+
+    #[derive(PartialEq, Debug, Clone)]
+
+pub struct WindowRange {
+        pub lower_bound: WindowBoundary,
+        pub upper_bound: WindowBoundary
+}
+
+type WindowUnit = DatePart;
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct WindowExpr {
+    documents: Option<WindowRange>,
+    range: Option<WindowRange>,
+    unit: Option<WindowUnit>
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct SetWindowFieldsOutputField {
+        pub name: String,
+        pub window_operator: MqlSemanticOperator,
+        pub window: WindowExpr
+    }
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct SetWindowFields {
+        pub source: Box<Stage>,
+        pub partition_by: Option<Expression>,
+        pub sort_by: Option<Vec<SortSpecification>>,
+        pub output_fields: Vec<SetWindowFieldsOutputField>
+}
+
+/// End: $setWindowField type definitions
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Project {
