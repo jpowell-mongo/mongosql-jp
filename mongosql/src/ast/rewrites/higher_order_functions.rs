@@ -227,14 +227,13 @@ impl HigherOrderFunctionsAliasVisitor {
 
         let is_filtering_out_nulls = matches!(remove_expr, Expression::Literal(Literal::Null));
         if is_filtering_out_nulls {
-            // Removing NULL keeps exactly the non-NULL elements, so the general predicate below
-            // collapses to a single NULL check.
             Ok(Self::make_filter(
                 array.clone(),
-                Expression::Unary(UnaryExpr {
-                    op: UnaryOp::Not,
-                    expr: Box::new(is_null(this())),
-                }),
+                Self::make_binary(
+                    this(),
+                    BinaryOp::Comparison(ComparisonOp::Neq),
+                    remove_expr.clone(),
+                ),
             ))
         } else {
             // NOT (this IS NULL AND x IS NULL): drop the element when both sides are NULL.
