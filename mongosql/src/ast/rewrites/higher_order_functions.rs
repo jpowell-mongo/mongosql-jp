@@ -196,20 +196,25 @@ impl HigherOrderFunctionsAliasVisitor {
     /// For any other `x`, rewrite `ARRAY_REMOVE(a, x)` into
     /// `FILTER(a, NOT (this IS NULL AND x IS NULL) AND (this IS NULL OR x IS NULL OR this <> x))`.
     ///
-    /// The guards below exist so that `this <> x` is only ever *reached* with two non-NULL
-    /// operands. Writing `A` for `this IS NULL` and `B` for `x IS NULL`, the predicate is
-    /// `NOT (A AND B) AND (A OR B OR this <> x)`, which decides each row as:
+    /// Example:
+    /// ```sql
+    /// SELECT VALUE {'v': ARRAY_REMOVE(a, x)} FROM my_collection
+    /// ```
+    ///
+    /// | row                          | `v`         |
+    /// |------------------------------|-------------|
+    /// | `{a: [1, null, 3], x: 1}`    | `[null, 3]` |
+    /// | `{a: [1, null, 3], x: null}` | `[1, 3]`    |
+    ///
+    /// Writing `A` for `this IS NULL` and `B` for `x IS NULL`, the predicate decides the second
+    /// row element by element as:
     ///
     /// | `this` | `x`  | `NOT (A AND B)` | `A OR B OR this <> x` | result |
     /// |--------|------|-----------------|-----------------------|--------|
-    /// | NULL   | 1    | true            | true (via `A`)        | keep   |
-    /// | 1      | 1    | true            | false                 | drop   |
     /// | 1      | NULL | true            | true (via `B`)        | keep   |
-    /// | NULL   | NULL | false           | -                     | drop   |
+    /// | NULL   | NULL | false           | true (via `A`)        | drop   |
+    /// | 3      | NULL | true            | true (via `B`)        | keep   |
     ///
-    /// In every row where `this <> x` would evaluate to NULL, `A` or `B` is already true, so
-    /// `$sqlOr` yields true and the NULL never propagates. And because `IS` always produces a
-    /// non-NULL boolean, the guards themselves are never NULL.
     fn rewrite_array_remove(args: &[Expression]) -> Result<Expression> {
         let [array, remove_expr] = try_exact_args("ARRAY_REMOVE", args)?;
 
