@@ -192,7 +192,7 @@ impl HigherOrderFunctionsAliasVisitor {
         ))
     }
 
-    /// Rewrite `ARRAY_REMOVE(a, NULL)` into `FILTER(a, NOT this IS NULL)`.
+    /// Rewrite `ARRAY_REMOVE(a, NULL)` into `FILTER(a, this <> NULL)`.
     /// For any other `x`, rewrite `ARRAY_REMOVE(a, x)` into
     /// `FILTER(a, NOT (this IS NULL AND x IS NULL) AND (this IS NULL OR x IS NULL OR this <> x))`.
     ///
