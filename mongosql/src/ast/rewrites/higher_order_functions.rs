@@ -200,7 +200,7 @@ impl HigherOrderFunctionsAliasVisitor {
 
         let is_filtering_out_nulls = matches!(remove_expr, Expression::Literal(Literal::Null));
         if is_filtering_out_nulls {
-            // If we're explicitly checking for null, then this is fine.
+            // If we're explicitly filtering out null, we can just use (x <> remove_expr)
             Ok(Self::make_filter(
                 array.clone(),
                 Self::make_binary(
@@ -210,13 +210,13 @@ impl HigherOrderFunctionsAliasVisitor {
                 ),
             ))
         } else {
-            // Not explicitly removing nulls, so null elements must be retained:
-            // FILTER(a, this IS NULL OR this <> remove_expr)
+            // If we're filtering out a literal, include an IS null checks, so we keep them.
             let include_null_values = Expression::Is(IsExpr {
                 expr: Box::new(this()),
                 target_type: TypeOrMissing::Type(Type::Null),
             });
 
+            // `FILTER(a, this IS NULL OR x <> remove_expr)
             Ok(Self::make_filter(
                 array.clone(),
                 Self::make_binary(
