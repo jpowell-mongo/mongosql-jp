@@ -4,9 +4,9 @@ dataset:
       name: "array_default_numeric_data"
       docs:
         - { "_id": 0, "a": [] }
-        - { "_id": 1, "a": [ 1 ] }
-        - { "_id": 2, "a": [ 1, 2, 3 ] }
-        - { "_id": 3, "a": [ 1, null, 3 ] }
+        - { "_id": 1, "a": [ 1 ], "x": 1 }
+        - { "_id": 2, "a": [ 1, 2, 3 ], "x": 2 }
+        - { "_id": 3, "a": [ 1, null, 3 ], "x": null}
         - { "_id": 4, "a": null }
         - { "_id": 5 }
     schema:
@@ -23,6 +23,10 @@ dataset:
                 anyOf:
                   - bsonType: "int"
                   - bsonType: !!str "null"
+            - bsonType: !!str "null"
+        x:
+          anyOf:
+            - bsonType: "int"
             - bsonType: !!str "null"
 
   - db: "spec_query_array_functions"

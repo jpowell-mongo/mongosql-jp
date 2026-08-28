@@ -20,6 +20,17 @@ tests:
       - { '': { "a": [1, null, 3], "v": [1, 3] } }
       - { '': { "a": null, "v": null } }
       - { '': { "v": null } }
+  - description: FILTER against field correctness test
+    current_db: spec_query_higher_order_functions
+    query: "SELECT VALUE { 'a': a, 'v': FILTER(a, this <> x) } FROM `filter` AS `filter`"
+    result:
+      - { '': { "a": [ ], "v": [ ] } }
+      - { '': { "a": [ 1 ], "v": [ ] } }
+      - { '': { "a": [ -1, 1, 2 ], "v": [ 1, 2 ] } }
+      - { '': { "a": [ 1, null, 3 ], "v": [ 1, 3 ] } }
+      - { '': { "a": null, "v": null } }
+      - { '': { "v": null } }
+
 
   - description: REDUCE correctness test
     current_db: spec_query_higher_order_functions

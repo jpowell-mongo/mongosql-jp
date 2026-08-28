@@ -61,6 +61,17 @@ tests:
       - { '': { "a": null, "v": null } }
       - { '': { "v": null } }
 
+  - description: ARRAY_REMOVE remove field correctness test
+    current_db: spec_query_array_functions
+    query: "SELECT VALUE { 'a': a, 'v': ARRAY_REMOVE(a, x) } FROM `array_default_numeric_data` AS `array_default_numeric_data`"
+    result:
+      - { '': { "a": [ ], "v": [ ] } }
+      - { '': { "a": [ 1 ], "v": [  ] } }
+      - { '': { "a": [ 1, 2, 3 ], "v": [ 1, 3 ] } }
+      - { '': { "a": [ 1, null, 3 ], "v": [ 1, 3 ] } }
+      - { '': { "a": null, "v": null } }
+      - { '': { "v": null } }
+
   # ARRAY_COUNT_IF counts the number of elements in the input array that satisfy the provided predicate
   - description: ARRAY_COUNT_IF correctness test
     current_db: spec_query_array_functions

@@ -192,35 +192,63 @@ impl HigherOrderFunctionsAliasVisitor {
         ))
     }
 
-    /// Rewrite `ARRAY_REMOVE(a, NULL)` into `FILTER(a, this <> NULL)`.
-    /// For any other `x`, null elements must be retained, so rewrite
-    /// `ARRAY_REMOVE(a, x)` into `FILTER(a, this IS NULL OR this <> x)`.
+    /// Rewrite `ARRAY_REMOVE(a, NULL)` into `FILTER(a, NOT this IS NULL)`.
+    /// For any other `x`, rewrite `ARRAY_REMOVE(a, x)` into
+    /// `FILTER(a, NOT (this IS NULL AND x IS NULL) AND (this IS NULL OR x IS NULL OR this <> x))`.
+    ///
+    /// The guards below exist so that `this <> x` is only ever *reached* with two non-NULL
+    /// operands. Writing `A` for `this IS NULL` and `B` for `x IS NULL`, the predicate is
+    /// `NOT (A AND B) AND (A OR B OR this <> x)`, which decides each row as:
+    ///
+    /// | `this` | `x`  | `NOT (A AND B)` | `A OR B OR this <> x` | result |
+    /// |--------|------|-----------------|-----------------------|--------|
+    /// | NULL   | 1    | true            | true (via `A`)        | keep   |
+    /// | 1      | 1    | true            | false                 | drop   |
+    /// | 1      | NULL | true            | true (via `B`)        | keep   |
+    /// | NULL   | NULL | false           | -                     | drop   |
+    ///
+    /// In every row where `this <> x` would evaluate to NULL, `A` or `B` is already true, so
+    /// `$sqlOr` yields true and the NULL never propagates. And because `IS` always produces a
+    /// non-NULL boolean, the guards themselves are never NULL.
     fn rewrite_array_remove(args: &[Expression]) -> Result<Expression> {
         let [array, remove_expr] = try_exact_args("ARRAY_REMOVE", args)?;
 
+        let is_null = |expr: Expression| {
+            Expression::Is(IsExpr {
+                expr: Box::new(expr),
+                target_type: TypeOrMissing::Type(Type::Null),
+            })
+        };
+
         let is_filtering_out_nulls = matches!(remove_expr, Expression::Literal(Literal::Null));
         if is_filtering_out_nulls {
-            // If we're explicitly filtering out null, we can just use (this <> remove_expr)
+            // Removing NULL keeps exactly the non-NULL elements, so the general predicate below
+            // collapses to a single NULL check.
             Ok(Self::make_filter(
                 array.clone(),
-                Self::make_binary(
-                    this(),
-                    BinaryOp::Comparison(ComparisonOp::Neq),
-                    remove_expr.clone(),
-                ),
+                Expression::Unary(UnaryExpr {
+                    op: UnaryOp::Not,
+                    expr: Box::new(is_null(this())),
+                }),
             ))
         } else {
-            // If we're filtering out a literal, include an IS null checks, so we keep them.
-            let include_null_values = Expression::Is(IsExpr {
-                expr: Box::new(this()),
-                target_type: TypeOrMissing::Type(Type::Null),
+            // NOT (this IS NULL AND x IS NULL): drop the element when both sides are NULL.
+            let not_both_null = Expression::Unary(UnaryExpr {
+                op: UnaryOp::Not,
+                expr: Box::new(Self::make_binary(
+                    is_null(this()),
+                    BinaryOp::And,
+                    is_null(remove_expr.clone()),
+                )),
             });
 
-            // `FILTER(a, this IS NULL OR this <> remove_expr)
-            Ok(Self::make_filter(
-                array.clone(),
+            // this IS NULL OR x IS NULL OR this <> x: keep the element when exactly one side is
+            // NULL, and otherwise defer to `<>` on two non-NULL operands.
+            let either_null_or_unequal = Self::make_binary(
+                is_null(this()),
+                BinaryOp::Or,
                 Self::make_binary(
-                    include_null_values,
+                    is_null(remove_expr.clone()),
                     BinaryOp::Or,
                     Self::make_binary(
                         this(),
@@ -228,6 +256,11 @@ impl HigherOrderFunctionsAliasVisitor {
                         remove_expr.clone(),
                     ),
                 ),
+            );
+
+            Ok(Self::make_filter(
+                array.clone(),
+                Self::make_binary(not_both_null, BinaryOp::And, either_null_or_unequal),
             ))
         }
     }

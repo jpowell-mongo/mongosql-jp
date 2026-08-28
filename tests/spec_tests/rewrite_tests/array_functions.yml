@@ -17,9 +17,13 @@ tests:
     query: "SELECT ARRAY_COMPACT(`array`) FROM foo"
     result: "SELECT VALUE {'_1': FILTER(`array`, NOT this IS NULL)} FROM foo AS foo"
 
-  - description: Rewrite ARRAY_REMOVE to FILTER
+  - description: Rewrite ARRAY_REMOVE against a field to FILTER
     query: "SELECT ARRAY_REMOVE(`array`, x) FROM foo"
-    result: "SELECT VALUE {'_1': FILTER(`array`, this <> x)} FROM foo AS foo"
+    result: "SELECT VALUE {'_1': FILTER(`array`, NOT (this IS NULL AND x IS NULL) AND (this IS NULL OR (x IS NULL OR this <> x)))} FROM foo AS foo"
+
+  - description: Rewrite ARRAY_REMOVE against null literal to FILTER
+    query: "SELECT ARRAY_REMOVE(`array`, null) FROM foo"
+    result: "SELECT VALUE {'_1': FILTER(`array`, this <> NULL)} FROM foo AS foo"
 
   - description: Rewrite ARRAY_COUNT_IF to FILTER
     query: "SELECT ARRAY_COUNT_IF(`array`, this > y) FROM foo"
