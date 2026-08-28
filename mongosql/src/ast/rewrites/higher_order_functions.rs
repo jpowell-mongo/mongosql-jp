@@ -200,7 +200,7 @@ impl HigherOrderFunctionsAliasVisitor {
 
         let is_filtering_out_nulls = matches!(remove_expr, Expression::Literal(Literal::Null));
         if is_filtering_out_nulls {
-            // If we're explicitly filtering out null, we can just use (x <> remove_expr)
+            // If we're explicitly filtering out null, we can just use (this <> remove_expr)
             Ok(Self::make_filter(
                 array.clone(),
                 Self::make_binary(
@@ -216,7 +216,7 @@ impl HigherOrderFunctionsAliasVisitor {
                 target_type: TypeOrMissing::Type(Type::Null),
             });
 
-            // `FILTER(a, this IS NULL OR x <> remove_expr)
+            // `FILTER(a, this IS NULL OR this <> remove_expr)
             Ok(Self::make_filter(
                 array.clone(),
                 Self::make_binary(
