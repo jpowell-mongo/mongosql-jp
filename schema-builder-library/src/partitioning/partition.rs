@@ -3,6 +3,25 @@ use tracing::instrument;
 
 pub const PARTITION_SIZE_IN_BYTES: i64 = 100 * 1024 * 1024; // 100 MB
 
+/// Returns true when `min` and `max` can be compared using match-language range operators.
+fn bounds_are_comparable(min: &Bson, max: &Bson) -> bool {
+    fn is_wildcard(bound: &Bson) -> bool {
+        matches!(bound, Bson::MinKey | Bson::MaxKey)
+    }
+
+    fn is_numeric(bound: &Bson) -> bool {
+        matches!(
+            bound,
+            Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Decimal128(_)
+        )
+    }
+
+    is_wildcard(min)
+        || is_wildcard(max)
+        || (is_numeric(min) && is_numeric(max))
+        || min.element_type() == max.element_type()
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Partition {
     pub min: Bson,
@@ -27,18 +46,45 @@ impl Partition {
             "$lt"
         };
 
-        let mut match_body = doc! {
-            partition_key: {
-                "$nin": ignored_ids,
-                "$gte": self.min.clone(),
-                lt_op: self.max.clone(),
+        // If the min and max bounds are not comparable in match language, fall back to the
+        // $expr language, whose comparison operators do not order values across BSON types.
+        if !bounds_are_comparable(&self.min, &self.max) {
+            let key_path = format!("${partition_key}");
+            let mut expr_body = doc! {
+                "$expr": {
+                    "$and": [
+                        doc! {"$gte": [&key_path, self.min.clone()]},
+                        doc! {lt_op: [&key_path, self.max.clone()]},
+                        // $literal keeps a $-prefixed ignored value from being read as a
+                        // field path.
+                        doc! {"$not": {"$in": [&key_path, {"$literal": ignored_ids.to_vec()}]}},
+                    ]
+                }
+            };
+
+            // $jsonSchema has no $expr equivalent, so the schema exclusion stays in match
+            // language as a sibling of $expr, which is valid within a single $match.
+            if let Some(schema) = doc {
+                expr_body.insert("$nor", vec![schema]);
             }
-        };
-        if let Some(schema) = doc {
-            match_body.insert("$nor", vec![schema]);
-        }
-        doc! {
-            "$match": match_body
+
+            doc! {
+                "$match": expr_body
+            }
+        } else {
+            let mut match_body = doc! {
+                partition_key: {
+                    "$nin": ignored_ids,
+                    "$gte": self.min.clone(),
+                    lt_op: self.max.clone(),
+                }
+            };
+            if let Some(schema) = doc {
+                match_body.insert("$nor", vec![schema]);
+            }
+            doc! {
+                "$match": match_body
+            }
         }
     }
 }
