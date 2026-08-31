@@ -225,48 +225,36 @@ impl HigherOrderFunctionsAliasVisitor {
             })
         };
 
-        let is_filtering_out_nulls = matches!(remove_expr, Expression::Literal(Literal::Null));
-        if is_filtering_out_nulls {
-            Ok(Self::make_filter(
-                array.clone(),
+        // NOT (this IS NULL AND x IS NULL): drop the element when both sides are NULL.
+        let not_both_null = Expression::Unary(UnaryExpr {
+            op: UnaryOp::Not,
+            expr: Box::new(Self::make_binary(
+                is_null(this()),
+                BinaryOp::And,
+                is_null(remove_expr.clone()),
+            )),
+        });
+
+        // this IS NULL OR x IS NULL OR this <> x: keep the element when exactly one side is
+        // NULL, and otherwise defer to `<>` on two non-NULL operands.
+        let either_null_or_unequal = Self::make_binary(
+            is_null(this()),
+            BinaryOp::Or,
+            Self::make_binary(
+                is_null(remove_expr.clone()),
+                BinaryOp::Or,
                 Self::make_binary(
                     this(),
                     BinaryOp::Comparison(ComparisonOp::Neq),
                     remove_expr.clone(),
                 ),
-            ))
-        } else {
-            // NOT (this IS NULL AND x IS NULL): drop the element when both sides are NULL.
-            let not_both_null = Expression::Unary(UnaryExpr {
-                op: UnaryOp::Not,
-                expr: Box::new(Self::make_binary(
-                    is_null(this()),
-                    BinaryOp::And,
-                    is_null(remove_expr.clone()),
-                )),
-            });
+            ),
+        );
 
-            // this IS NULL OR x IS NULL OR this <> x: keep the element when exactly one side is
-            // NULL, and otherwise defer to `<>` on two non-NULL operands.
-            let either_null_or_unequal = Self::make_binary(
-                is_null(this()),
-                BinaryOp::Or,
-                Self::make_binary(
-                    is_null(remove_expr.clone()),
-                    BinaryOp::Or,
-                    Self::make_binary(
-                        this(),
-                        BinaryOp::Comparison(ComparisonOp::Neq),
-                        remove_expr.clone(),
-                    ),
-                ),
-            );
-
-            Ok(Self::make_filter(
-                array.clone(),
-                Self::make_binary(not_both_null, BinaryOp::And, either_null_or_unequal),
-            ))
-        }
+        Ok(Self::make_filter(
+            array.clone(),
+            Self::make_binary(not_both_null, BinaryOp::And, either_null_or_unequal),
+        ))
     }
 
     /// Rewrite `ARRAY_COUNT_IF(a, f)` into `SIZE(FILTER(a, f))`.

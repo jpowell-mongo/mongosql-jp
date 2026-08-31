@@ -1418,11 +1418,6 @@ mod scalar_functions {
 
 mod higher_order_functions {
     use super::*;
-    test_rewrite!(array_remove_with_field,
-        pass = HigherOrderFunctionsRewritePass,
-        expected = Ok("SELECT VALUE {'a': a, 'v': FILTER(a, NOT (this IS NULL AND x IS NULL) AND (this IS NULL OR (x IS NULL OR this <> x)))} FROM array_default_numeric_data AS array_default_numeric_data"),
-        input = "SELECT VALUE { 'a': a, 'v': ARRAY_REMOVE(a, x) } FROM `array_default_numeric_data` AS `array_default_numeric_data`",
-    );
 
     test_rewrite!(
         array_cast,

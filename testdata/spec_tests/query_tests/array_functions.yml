@@ -4,11 +4,42 @@ dataset:
       name: "array_default_numeric_data"
       docs:
         - { "_id": 0, "a": [] }
-        - { "_id": 1, "a": [ 1 ], "x": 1 }
-        - { "_id": 2, "a": [ 1, 2, 3 ], "x": 2 }
-        - { "_id": 3, "a": [ 1, null, 3 ], "x": null}
+        - { "_id": 1, "a": [ 1 ] }
+        - { "_id": 2, "a": [ 1, 2, 3 ] }
+        - { "_id": 3, "a": [ 1, null, 3 ] }
         - { "_id": 4, "a": null }
         - { "_id": 5 }
+    schema:
+      bsonType: "object"
+      required: [ "_id" ]
+      additionalProperties: false
+      properties:
+        _id:
+          bsonType: "int"
+        a:
+          anyOf:
+            - bsonType: "array"
+              items:
+                anyOf:
+                  - bsonType: "int"
+                  - bsonType: !!str "null"
+            - bsonType: !!str "null"
+
+  # Data for ARRAY_REMOVE(a, x), where x is a field reference. Covers both x NULL with no NULL
+  # elements in a, and x non-NULL with a NULL element in a.
+  - db: "spec_query_array_functions"
+    collection:
+      name: "array_remove_correctness"
+      docs:
+        - { "_id": 0, "a": [], "x": 1 }
+        - { "_id": 1, "a": [ 1 ], "x": 1 }
+        - { "_id": 2, "a": [ -1, 1, 2 ], "x": 1 }
+        - { "_id": 3, "a": [ 1, null, 3 ], "x": null }
+        - { "_id": 4, "a": null, "x": 1 }
+        - { "_id": 5, "x": 1 }
+        - { "_id": 6, "a": [ -1, 1, 2 ], "x": null }
+        - { "_id": 7, "a": [ 1, null, 3 ], "x": 1 }
+        - { "_id": 8, "a": [ 1, 2, 3 ] }
     schema:
       bsonType: "object"
       required: [ "_id" ]
