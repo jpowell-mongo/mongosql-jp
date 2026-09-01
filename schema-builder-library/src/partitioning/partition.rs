@@ -33,6 +33,7 @@ impl Partition {
     // generate_partition_match generates the $match stage for sampling based on the partition, an
     // optional schema, and a list of _id values to ignore. If the Schema is None, the $match will
     // only be based on the Partition bounds and the ignored_ids list.
+    // If the min and max bounds are not comparable in match language, the $expr language will be used.
     #[instrument(level = "trace", skip_all)]
     pub fn generate_match(
         &self,
@@ -47,7 +48,7 @@ impl Partition {
         };
 
         // If the min and max bounds are not comparable in match language, fall back to the
-        // $expr language, whose comparison operators do not order values across BSON types.
+        // $expr language
         if !bounds_are_comparable(&self.min, &self.max) {
             let key_path = format!("${partition_key}");
             let mut expr_body = doc! {
