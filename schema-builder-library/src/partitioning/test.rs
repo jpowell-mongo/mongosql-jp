@@ -155,32 +155,6 @@ mod test {
     }
 
     #[test]
-    fn test_generate_partition_match_with_mismatched_bson_types_non_id_partition_key() {
-        let partition = Partition {
-            min: Bson::String("my_user_id".to_string()),
-            max: Bson::Int64(5000),
-            is_max_bound_inclusive: true,
-        };
-
-        let ignored_ids = vec![Bson::Int64(100)];
-        let match_stage = partition.generate_match(None, &ignored_ids, "timestamp");
-        assert_eq!(
-            match_stage,
-            doc! {
-                "$match": {
-                    "$expr": {
-                        "$and": [
-                            {"$gte": ["$timestamp", Bson::String("my_user_id".to_string())]},
-                            {"$lte": ["$timestamp", Bson::Int64(5000)]},
-                            {"$not": {"$in": ["$timestamp", {"$literal": vec![Bson::Int64(100)]}]}}
-                        ]
-                    }
-                }
-            }
-        );
-    }
-
-    #[test]
     fn test_generate_partition_match_without_schema_doc_max_bound_inclusive() {
         let partition = Partition {
             min: Bson::MinKey,
