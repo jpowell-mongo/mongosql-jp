@@ -1,5 +1,10 @@
-use test_utils::schema_builder_library_integration_test_consts::{MISMATCHED_TYPES_COLL_NAME, MISMATCHED_TYPES_DB_NAME};
-use crate::internal_integration_tests::consts::{DEFAULT_COLLECTION_INFO, DEFAULT_HINT, DEFAULT_PARTITION_KEY, MISMATCHED_ID_TYPES_PARTITIONS, SMALL_PARTITIONS};
+use crate::internal_integration_tests::consts::{
+    DEFAULT_COLLECTION_INFO, DEFAULT_HINT, DEFAULT_PARTITION_KEY, MISMATCHED_ID_TYPES_PARTITIONS,
+    SMALL_PARTITIONS,
+};
+use test_utils::schema_builder_library_integration_test_consts::{
+    MISMATCHED_TYPES_COLL_NAME, MISMATCHED_TYPES_DB_NAME,
+};
 
 macro_rules! test_get_partitions {
     ($test_name:ident, expected = $expected:expr, input_db = $input_db:expr, input_coll = $input_coll:expr $(, ignore = $ignore:expr)?) => {
