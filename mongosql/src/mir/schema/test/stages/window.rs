@@ -131,7 +131,9 @@ test_schema!(
 // A bounded frame can be empty near a partition edge, so the result becomes nullable.
 #[test]
 fn bounded_frame_is_nullable() {
-    use crate::{catalog::Catalog, mir::schema::SchemaInferenceState, CachedSchema, SchemaCheckingMode};
+    use crate::{
+        catalog::Catalog, mir::schema::SchemaInferenceState, CachedSchema, SchemaCheckingMode,
+    };
 
     let catalog = Catalog::new(map! {
         Namespace {database: "db".into(), collection: "foo".into()} => Schema::Document(Document {

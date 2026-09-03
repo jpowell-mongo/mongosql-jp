@@ -37,7 +37,9 @@ fn collect_window_functions(
     }
     impl ast::visitor_ref::VisitorRef for WindowCollector {
         fn visit_window_function_expr(&mut self, node: &ast::WindowFunctionExpr) {
-            let key = ast::Expression::Window(node.clone()).pretty_print().unwrap();
+            let key = ast::Expression::Window(node.clone())
+                .pretty_print()
+                .unwrap();
             if !self.found.iter().any(|(k, _)| *k == key) {
                 self.found.push((key, node.clone()));
             }
@@ -488,7 +490,8 @@ impl<'a> Algebrizer<'a> {
 
         // Bucket by specification, preserving first-seen order so the emitted chain is
         // deterministic. The key is the printed spec, which is exactly the equality we want.
-        let mut buckets: Vec<(ast::WindowSpec, Vec<(String, ast::WindowFunctionExpr)>)> = Vec::new();
+        let mut buckets: Vec<(ast::WindowSpec, Vec<(String, ast::WindowFunctionExpr)>)> =
+            Vec::new();
         for (key, w) in collected {
             let spec_key = window_spec_key(&w.over);
             match buckets
@@ -561,9 +564,7 @@ impl<'a> Algebrizer<'a> {
                 window_exprs.insert(
                     key,
                     post_window.construct_field_access_expr(
-                        mir::Expression::Reference(
-                            Key::bot(self.scope_level).into(),
-                        ),
+                        mir::Expression::Reference(Key::bot(self.scope_level).into()),
                         alias,
                     )?,
                 );
@@ -794,7 +795,8 @@ impl<'a> Algebrizer<'a> {
         // Hoist window functions into one or more Window stages before SELECT is
         // algebrized, so the field accesses that read their outputs resolve. This mirrors
         // the Group stage already being the source when `_aggN` is resolved.
-        let (plan, window_exprs) = self.algebrize_window_functions(&ast_node.select_clause, plan)?;
+        let (plan, window_exprs) =
+            self.algebrize_window_functions(&ast_node.select_clause, plan)?;
         let algebrizer = self.with_window_exprs(window_exprs);
         let plan = if algebrizer.allow_order_by_missing_columns
             && ast_node.select_clause.set_quantifier != ast::SetQuantifier::Distinct

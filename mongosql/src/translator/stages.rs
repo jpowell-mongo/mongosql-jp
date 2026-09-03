@@ -206,9 +206,9 @@ impl MqlTranslator {
         // $group builds a compound _id. Empty means one partition over the whole input.
         let partition_by = match mir_window.partition_by.len() {
             0 => None,
-            1 => Some(self.translate_expression(
-                mir_window.partition_by.into_iter().next().unwrap(),
-            )?),
+            1 => Some(
+                self.translate_expression(mir_window.partition_by.into_iter().next().unwrap())?,
+            ),
             _ => {
                 let mut doc = UniqueLinkedHashMap::new();
                 for (i, e) in mir_window.partition_by.into_iter().enumerate() {

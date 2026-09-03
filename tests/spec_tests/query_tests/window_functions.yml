@@ -1,0 +1,245 @@
+tests:
+  - description: window function over an empty input outputs empty
+    query: "SELECT a AS a, SUM(a) OVER () AS total FROM [] AS arr"
+    current_db: test
+    result: []
+
+  - description: SUM OVER () with no partition or sort totals the whole input
+    query: "SELECT a AS a, SUM(a) OVER () AS total FROM [{'a': 1}, {'a': 2}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "total": { "$numberInt": "6" } } }
+      - { "": { "a": { "$numberInt": "2" }, "total": { "$numberInt": "6" } } }
+      - { "": { "a": { "$numberInt": "3" }, "total": { "$numberInt": "6" } } }
+
+  # An explicit frame is required for a running total. Without one the window is the
+  # whole partition, which is a grand total rather than a cumulative one.
+  - description: running total with an explicit ROWS frame
+    query: "SELECT a AS a, SUM(a) OVER (ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running FROM [{'a': 1}, {'a': 2}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "running": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "2" }, "running": { "$numberInt": "3" } } }
+      - { "": { "a": { "$numberInt": "3" }, "running": { "$numberInt": "6" } } }
+
+  - description: SUM OVER PARTITION BY totals within each partition
+    query: "SELECT a AS a, g AS g, SUM(a) OVER (PARTITION BY g) AS s FROM [{'a': 1, 'g': 'x'}, {'a': 2, 'g': 'x'}, {'a': 10, 'g': 'y'}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "g": "x", "s": { "$numberInt": "3" } } }
+      - { "": { "a": { "$numberInt": "2" }, "g": "x", "s": { "$numberInt": "3" } } }
+      - { "": { "a": { "$numberInt": "10" }, "g": "y", "s": { "$numberInt": "10" } } }
+
+  - description: RANK assigns equal ranks to ties and skips the next rank
+    query: "SELECT a AS a, RANK() OVER (ORDER BY a) AS r FROM [{'a': 1}, {'a': 1}, {'a': 2}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "r": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "1" }, "r": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "2" }, "r": { "$numberInt": "3" } } }
+
+  - description: DENSE_RANK does not skip after a tie
+    query: "SELECT a AS a, DENSE_RANK() OVER (ORDER BY a) AS r FROM [{'a': 1}, {'a': 1}, {'a': 2}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "r": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "1" }, "r": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "2" }, "r": { "$numberInt": "2" } } }
+
+  - description: ROW_NUMBER numbers rows within the partition
+    query: "SELECT a AS a, ROW_NUMBER() OVER (ORDER BY a) AS rn FROM [{'a': 10}, {'a': 20}, {'a': 30}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "10" }, "rn": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "20" }, "rn": { "$numberInt": "2" } } }
+      - { "": { "a": { "$numberInt": "30" }, "rn": { "$numberInt": "3" } } }
+
+  - description: COUNT(*) OVER () counts every document in the window
+    query: "SELECT a AS a, COUNT(*) OVER () AS n FROM [{'a': 1}, {'a': 2}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "n": { "$numberInt": "2" } } }
+      - { "": { "a": { "$numberInt": "2" }, "n": { "$numberInt": "2" } } }
+
+  # LAG at the first row of a partition has nothing to shift from, so it yields the
+  # default, which is null when none is given.
+  - description: LAG yields null at the partition edge
+    query: "SELECT a AS a, LAG(a) OVER (ORDER BY a) AS prev FROM [{'a': 1}, {'a': 2}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "prev": null } }
+      - { "": { "a": { "$numberInt": "2" }, "prev": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "3" }, "prev": { "$numberInt": "2" } } }
+
+  - description: LEAD with an explicit default uses it at the partition edge
+    query: "SELECT a AS a, LEAD(a, 1, 0) OVER (ORDER BY a) AS nxt FROM [{'a': 1}, {'a': 2}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "nxt": { "$numberInt": "2" } } }
+      - { "": { "a": { "$numberInt": "2" }, "nxt": { "$numberInt": "0" } } }
+
+  # The motivating case: a value alongside its own lagged value and the delta. The same
+  # window call appears twice, so de-duplication must not change the results.
+  - description: period over period comparison
+    query: "SELECT order_date AS order_date, price AS price, LAG(price) OVER (ORDER BY order_date) AS one_day_before, price - LAG(price) OVER (ORDER BY order_date) AS daily_change FROM [{'order_date': 1, 'price': 10}, {'order_date': 2, 'price': 13}, {'order_date': 3, 'price': 11}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "order_date": { "$numberInt": "1" }, "price": { "$numberInt": "10" }, "one_day_before": null, "daily_change": null } }
+      - { "": { "order_date": { "$numberInt": "2" }, "price": { "$numberInt": "13" }, "one_day_before": { "$numberInt": "10" }, "daily_change": { "$numberInt": "3" } } }
+      - { "": { "order_date": { "$numberInt": "3" }, "price": { "$numberInt": "11" }, "one_day_before": { "$numberInt": "13" }, "daily_change": { "$numberInt": "-2" } } }
+
+  # Two different specifications cannot share a $setWindowFields stage, so this exercises
+  # the chained-stage path end to end.
+  - description: two different window specifications in one query
+    query: "SELECT a AS a, g AS g, SUM(a) OVER (PARTITION BY g) AS s, ROW_NUMBER() OVER (ORDER BY a) AS rn FROM [{'a': 1, 'g': 'x'}, {'a': 2, 'g': 'x'}, {'a': 10, 'g': 'y'}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "g": "x", "s": { "$numberInt": "3" }, "rn": { "$numberInt": "1" } } }
+      - { "": { "a": { "$numberInt": "2" }, "g": "x", "s": { "$numberInt": "3" }, "rn": { "$numberInt": "2" } } }
+      - { "": { "a": { "$numberInt": "10" }, "g": "y", "s": { "$numberInt": "10" }, "rn": { "$numberInt": "3" } } }
+
+  # --- Remaining aggregate functions ---------------------------------------
+  # These lower through the same generic path as SUM: algebrize_window_expr ->
+  # mir::AggregationFunction -> agg_func_to_mql_op. The cases below exist to prove
+  # that each one actually works rather than merely compiles.
+
+  - description: MIN and MAX share one stage when the specification matches
+    query: "SELECT a AS a, g AS g, MIN(a) OVER (PARTITION BY g) AS mn, MAX(a) OVER (PARTITION BY g) AS mx FROM [{'a': 1, 'g': 'x'}, {'a': 5, 'g': 'x'}, {'a': 10, 'g': 'y'}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "g": "x", "mn": { "$numberInt": "1" }, "mx": { "$numberInt": "5" } } }
+      - { "": { "a": { "$numberInt": "5" }, "g": "x", "mn": { "$numberInt": "1" }, "mx": { "$numberInt": "5" } } }
+      - { "": { "a": { "$numberInt": "10" }, "g": "y", "mn": { "$numberInt": "10" }, "mx": { "$numberInt": "10" } } }
+
+  - description: AVG OVER PARTITION BY averages within each partition
+    query: "SELECT a AS a, g AS g, AVG(a) OVER (PARTITION BY g) AS av FROM [{'a': 1, 'g': 'x'}, {'a': 2, 'g': 'x'}, {'a': 6, 'g': 'y'}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "g": "x", "av": { "$numberDouble": "1.5" } } }
+      - { "": { "a": { "$numberInt": "2" }, "g": "x", "av": { "$numberDouble": "1.5" } } }
+      - { "": { "a": { "$numberInt": "6" }, "g": "y", "av": { "$numberDouble": "6" } } }
+
+  # FIRST and LAST require a sortBy; SetWindowFields::new rejects them without one.
+  # With no explicit frame the window is the whole partition, so every row sees the
+  # same first and last value.
+  - description: FIRST and LAST over the whole partition
+    query: "SELECT a AS a, FIRST(a) OVER (ORDER BY a) AS f, LAST(a) OVER (ORDER BY a) AS l FROM [{'a': 10}, {'a': 20}, {'a': 30}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "10" }, "f": { "$numberInt": "10" }, "l": { "$numberInt": "30" } } }
+      - { "": { "a": { "$numberInt": "20" }, "f": { "$numberInt": "10" }, "l": { "$numberInt": "30" } } }
+      - { "": { "a": { "$numberInt": "30" }, "f": { "$numberInt": "10" }, "l": { "$numberInt": "30" } } }
+
+  # An explicit frame narrows the window to end at the current row, so LAST becomes
+  # the current row's own value. This is the one path where the frame and the sort
+  # order interact.
+  - description: LAST with a frame ending at the current row
+    query: "SELECT a AS a, LAST(a) OVER (ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS l FROM [{'a': 10}, {'a': 20}, {'a': 30}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "10" }, "l": { "$numberInt": "10" } } }
+      - { "": { "a": { "$numberInt": "20" }, "l": { "$numberInt": "20" } } }
+      - { "": { "a": { "$numberInt": "30" }, "l": { "$numberInt": "30" } } }
+
+  # No dataset makes population and sample deviation exact at the same time, so
+  # these use separate inputs chosen to give exactly 1.0 rather than a transcribed
+  # irrational double.
+  - description: STDDEV_POP OVER ()
+    query: "SELECT a AS a, STDDEV_POP(a) OVER () AS sp FROM [{'a': 1}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "sp": { "$numberDouble": "1" } } }
+      - { "": { "a": { "$numberInt": "3" }, "sp": { "$numberDouble": "1" } } }
+
+  - description: STDDEV_SAMP OVER ()
+    query: "SELECT a AS a, STDDEV_SAMP(a) OVER () AS ss FROM [{'a': 1}, {'a': 2}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "ss": { "$numberDouble": "1" } } }
+      - { "": { "a": { "$numberInt": "2" }, "ss": { "$numberDouble": "1" } } }
+      - { "": { "a": { "$numberInt": "3" }, "ss": { "$numberDouble": "1" } } }
+
+  - description: ADD_TO_ARRAY collects the partition in sort order
+    query: "SELECT a AS a, ADD_TO_ARRAY(a) OVER (ORDER BY a) AS arr_a FROM [{'a': 1}, {'a': 2}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "arr_a": [{ "$numberInt": "1" }, { "$numberInt": "2" }, { "$numberInt": "3" }] } }
+      - { "": { "a": { "$numberInt": "2" }, "arr_a": [{ "$numberInt": "1" }, { "$numberInt": "2" }, { "$numberInt": "3" }] } }
+      - { "": { "a": { "$numberInt": "3" }, "arr_a": [{ "$numberInt": "1" }, { "$numberInt": "2" }, { "$numberInt": "3" }] } }
+
+  # --- Nested expression as the window argument ----------------------------
+  # The argument is algebrized like any other expression, so a CASE works with no
+  # special handling.
+
+  - description: SUM of a CASE expression OVER ()
+    query: "SELECT department AS department, sales_amount AS sales_amount, SUM(CASE WHEN department = 'Electronics' THEN sales_amount ELSE 0 END) OVER () AS electronics_total FROM [{'department': 'Electronics', 'sales_amount': 100}, {'department': 'Electronics', 'sales_amount': 50}, {'department': 'Toys', 'sales_amount': 70}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "department": "Electronics", "sales_amount": { "$numberInt": "100" }, "electronics_total": { "$numberInt": "150" } } }
+      - { "": { "department": "Electronics", "sales_amount": { "$numberInt": "50" }, "electronics_total": { "$numberInt": "150" } } }
+      - { "": { "department": "Toys", "sales_amount": { "$numberInt": "70" }, "electronics_total": { "$numberInt": "150" } } }
+
+  # The same CASE as a running total: a non-trivial argument and a bounded frame
+  # together. Sorted by sales_amount the rows are 50 (Electronics), 70 (Toys),
+  # 100 (Electronics), so the cumulative Electronics total is 50, 50, 150.
+  - description: running total of a CASE expression
+    query: "SELECT department AS department, sales_amount AS sales_amount, SUM(CASE WHEN department = 'Electronics' THEN sales_amount ELSE 0 END) OVER (ORDER BY sales_amount ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_electronics FROM [{'department': 'Electronics', 'sales_amount': 100}, {'department': 'Electronics', 'sales_amount': 50}, {'department': 'Toys', 'sales_amount': 70}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "department": "Electronics", "sales_amount": { "$numberInt": "50" }, "running_electronics": { "$numberInt": "50" } } }
+      - { "": { "department": "Toys", "sales_amount": { "$numberInt": "70" }, "running_electronics": { "$numberInt": "50" } } }
+      - { "": { "department": "Electronics", "sales_amount": { "$numberInt": "100" }, "running_electronics": { "$numberInt": "150" } } }
+
+  # --- MQL versus SQL accumulator semantics --------------------------------
+  # Window aggregates lower to the raw MQL operators ($min, $first), not the
+  # SQL-semantic accumulators ($sqlMin, $sqlFirst) that GROUP BY uses. These cases
+  # pin what that means when nulls are present.
+
+  - description: MIN and MAX skip nulls in a window
+    query: "SELECT a AS a, MIN(a) OVER () AS mn, MAX(a) OVER () AS mx FROM [{'a': 1}, {'a': null}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "mn": { "$numberInt": "1" }, "mx": { "$numberInt": "3" } } }
+      - { "": { "a": null, "mn": { "$numberInt": "1" }, "mx": { "$numberInt": "3" } } }
+      - { "": { "a": { "$numberInt": "3" }, "mn": { "$numberInt": "1" }, "mx": { "$numberInt": "3" } } }
+
+  # Unlike MIN, FIRST does not skip nulls: it returns whatever value sorts first,
+  # and BSON orders null before numbers.
+  - description: FIRST and LAST do not skip nulls
+    query: "SELECT a AS a, FIRST(a) OVER (ORDER BY a) AS f, LAST(a) OVER (ORDER BY a) AS l FROM [{'a': 1}, {'a': null}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "f": null, "l": { "$numberInt": "3" } } }
+      - { "": { "a": null, "f": null, "l": { "$numberInt": "3" } } }
+      - { "": { "a": { "$numberInt": "3" }, "f": null, "l": { "$numberInt": "3" } } }
+
+  - description: SUM skips nulls in a window
+    query: "SELECT a AS a, SUM(a) OVER () AS s FROM [{'a': 1}, {'a': null}, {'a': 3}] AS arr"
+    current_db: test
+    ordered: false
+    result:
+      - { "": { "a": { "$numberInt": "1" }, "s": { "$numberInt": "4" } } }
+      - { "": { "a": null, "s": { "$numberInt": "4" } } }
+      - { "": { "a": { "$numberInt": "3" }, "s": { "$numberInt": "4" } } }

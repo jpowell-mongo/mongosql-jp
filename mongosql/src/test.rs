@@ -680,24 +680,28 @@ mod window_functions {
     window_stages_test!(
         partition_and_sort,
         sql = "SELECT SUM(a) OVER (PARTITION BY b ORDER BY a) AS running FROM foo",
-        expected =
-            [r#"{"partitionBy":"$foo.b","sortBy":{"foo.a":1},"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#]
+        expected = [
+            r#"{"partitionBy":"$foo.b","sortBy":{"foo.a":1},"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#
+        ]
     );
 
     // Several partition keys become a document, the way $group builds a compound _id.
     window_stages_test!(
         multiple_partition_keys_become_a_document,
         sql = "SELECT SUM(a) OVER (PARTITION BY b, c) AS s FROM foo",
-        expected =
-            [r#"{"partitionBy":{"_partition0":"$foo.b","_partition1":"$foo.c"},"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#]
+        expected = [
+            r#"{"partitionBy":{"_partition0":"$foo.b","_partition1":"$foo.c"},"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#
+        ]
     );
 
     // Sharing a specification means sharing a stage, even though the frames differ.
     window_stages_test!(
         same_specification_shares_one_stage,
-        sql = "SELECT SUM(a) OVER (PARTITION BY b) AS s, AVG(a) OVER (PARTITION BY b) AS av FROM foo",
-        expected =
-            [r#"{"partitionBy":"$foo.b","output":{"__bot._wf1":{"$sum":"$foo.a"},"__bot._wf2":{"$avg":"$foo.a"}}}"#]
+        sql =
+            "SELECT SUM(a) OVER (PARTITION BY b) AS s, AVG(a) OVER (PARTITION BY b) AS av FROM foo",
+        expected = [
+            r#"{"partitionBy":"$foo.b","output":{"__bot._wf1":{"$sum":"$foo.a"},"__bot._wf2":{"$avg":"$foo.a"}}}"#
+        ]
     );
 
     // Differing specifications cannot share a stage, because $setWindowFields carries only
@@ -716,8 +720,9 @@ mod window_functions {
         differing_frames_share_a_stage,
         sql = "SELECT SUM(a) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS w, \
                SUM(a) OVER (ORDER BY b) AS t FROM foo",
-        expected =
-            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$sum":"$foo.a","window":{"documents":[-2,"current"]}},"__bot._wf2":{"$sum":"$foo.a"}}}"#]
+        expected = [
+            r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$sum":"$foo.a","window":{"documents":[-2,"current"]}},"__bot._wf2":{"$sum":"$foo.a"}}}"#
+        ]
     );
 
     window_stages_test!(
@@ -730,29 +735,33 @@ mod window_functions {
     window_stages_test!(
         lag_negates_the_offset,
         sql = "SELECT LAG(a, 1) OVER (ORDER BY b) AS prev FROM foo",
-        expected =
-            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":-1}}}}"#]
+        expected = [
+            r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":-1}}}}"#
+        ]
     );
 
     window_stages_test!(
         lead_with_default,
         sql = "SELECT LEAD(a, 2, 0) OVER (ORDER BY b) AS nxt FROM foo",
-        expected =
-            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":2,"default":{"$literal":0}}}}}"#]
+        expected = [
+            r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":2,"default":{"$literal":0}}}}}"#
+        ]
     );
 
     window_stages_test!(
         omitted_shift_offset_defaults_to_one,
         sql = "SELECT LAG(a) OVER (ORDER BY b) AS prev FROM foo",
-        expected =
-            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":-1}}}}"#]
+        expected = [
+            r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":-1}}}}"#
+        ]
     );
 
     window_stages_test!(
         row_number_maps_to_document_number,
         sql = "SELECT ROW_NUMBER() OVER (PARTITION BY c ORDER BY a DESC) AS rn FROM foo",
-        expected =
-            [r#"{"partitionBy":"$foo.c","sortBy":{"foo.a":-1},"output":{"__bot._wf1":{"$documentNumber":{}}}}"#]
+        expected = [
+            r#"{"partitionBy":"$foo.c","sortBy":{"foo.a":-1},"output":{"__bot._wf1":{"$documentNumber":{}}}}"#
+        ]
     );
 
     window_stages_test!(
@@ -924,7 +933,8 @@ mod window_functions {
 
     error_test!(
         range_frame_without_order_by_is_rejected,
-        sql = "SELECT SUM(a) OVER (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
+        sql =
+            "SELECT SUM(a) OVER (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
         expected =
             "rewrite error: a RANGE window frame requires an ORDER BY in its window specification"
     );
