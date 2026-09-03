@@ -29,6 +29,7 @@ use crate::{
         binding_tuple::Key, schema::SchemaInferenceState, visitor::Visitor, Derived, EquiJoin,
         Expression, Filter, Group, Join, JoinType, LateralJoin, Limit, MatchFilter, MqlStage,
         Offset, Project, ScalarFunction, ScalarFunctionApplication, Set, Sort, Stage, Unwind,
+        Window,
     },
     schema::ResultSet,
     SchemaCheckingMode,
@@ -59,6 +60,9 @@ impl Stage {
             // It's possible to have a Group that does not modify cardinality and thus invalidate
             // an offset, but we can consider that a very rare occurrence.
             Stage::Group(_) => true,
+            // A Window does not change cardinality, but moving a Limit below it would
+            // shrink the input and therefore the contents of every window frame.
+            Stage::Window(_) => true,
             // ordering of two Limits does not matter. Limit 5, Limit 3 = Limit 3, Limit 5.
             // MongoDB coalesces two Limits into one (Limit 3).
             Stage::Limit(_) => true,
@@ -120,6 +124,13 @@ impl Stage {
             Stage::Sort(n) => (
                 vec![*n.source],
                 Stage::Sort(Sort {
+                    source: Box::new(Stage::Sentinel),
+                    ..n
+                }),
+            ),
+            Stage::Window(n) => (
+                vec![*n.source],
+                Stage::Window(Window {
                     source: Box::new(Stage::Sentinel),
                     ..n
                 }),
@@ -207,6 +218,10 @@ impl Stage {
                 ..s
             }),
             Stage::Sort(s) => Stage::Sort(Sort {
+                source: sources.swap_remove(0).into(),
+                ..s
+            }),
+            Stage::Window(s) => Stage::Window(Window {
                 source: sources.swap_remove(0).into(),
                 ..s
             }),
@@ -464,6 +479,7 @@ impl StageMovementVisitor<'_> {
             Stage::Limit(l) => (Some(l.source.as_ref()), None),
             Stage::Offset(o) => (Some(o.source.as_ref()), None),
             Stage::Unwind(u) => (Some(u.source.as_ref()), None),
+            Stage::Window(w) => (Some(w.source.as_ref()), None),
             Stage::Derived(d) => (Some(d.source.as_ref()), None),
             Stage::MqlIntrinsic(MqlStage::MatchFilter(m)) => (Some(m.source.as_ref()), None),
             Stage::MqlIntrinsic(MqlStage::EquiJoin(e)) => {
@@ -699,6 +715,9 @@ impl StageMovementVisitor<'_> {
                     | Stage::Array(_)
                     | Stage::Sort(_)
                     | Stage::Group(_)
+                    // A Sort must not move above a Window: $setWindowFields emits documents
+                    // in its own sortBy order, so a sort placed before it would be discarded.
+                    | Stage::Window(_)
                     // A Sort must not move above an Unwind: unwinding multiplies rows, so
                     // sorting before the unwind does not preserve the post-unwind ordering.
                     // (Previously this was prevented only incidentally by substitution failing

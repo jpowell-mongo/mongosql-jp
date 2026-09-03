@@ -151,3 +151,21 @@ tests:
     exclude_namespaces: true
     should_compile: false
     algebrize_error: "Error 4000: Consider aliasing the following conflicting field(s) to unique names: a"
+
+  - description: Error 3036 DistinctWindowFunction
+    query: "SELECT SUM(DISTINCT a) OVER () AS s FROM foo"
+    current_db: errors_algebrizer
+    should_compile: false
+    algebrize_error: 'Error 3036: DISTINCT is not supported in the window function `SUM(DISTINCT a) OVER ()`.'
+
+  - description: Error 3037 WindowFunctionWithoutOver
+    query: "SELECT RANK() AS r FROM foo"
+    current_db: errors_algebrizer
+    should_compile: false
+    algebrize_error: 'Error 3037: `RANK()` is a window function and requires an OVER clause'
+
+  - description: Error 3038 InvalidWindowSortKey
+    query: "SELECT SUM(a) OVER (ORDER BY a[0]) AS s FROM foo"
+    current_db: errors_algebrizer
+    should_compile: false
+    algebrize_error: "Error 3038: expressions are not allowed in a window's ORDER BY; use a field path"

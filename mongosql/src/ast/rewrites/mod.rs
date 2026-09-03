@@ -29,6 +29,8 @@ mod with_query;
 pub use with_query::WithQueryRewritePass;
 mod higher_order_functions;
 pub use higher_order_functions::HigherOrderFunctionsRewritePass;
+mod window_functions;
+pub use window_functions::WindowFunctionsRewritePass;
 
 #[cfg(test)]
 mod test;
@@ -66,6 +68,12 @@ pub enum Error {
     UnwindSourceWithoutPath,
     #[error("duplicate option in UNWIND: {0}")]
     DuplicateOptionInUnwind(&'static str),
+    #[error("window functions are not allowed in the {0} clause")]
+    WindowFunctionNotAllowedInClause(&'static str),
+    #[error("a RANGE window frame requires an ORDER BY in its window specification")]
+    RangeWindowRequiresOrderBy,
+    #[error("window functions are not allowed in a SELECT VALUE body")]
+    WindowFunctionInSelectValues,
 }
 
 /// A fallible transformation that can be applied to a query
@@ -82,6 +90,7 @@ pub fn rewrite_query(query: ast::Query) -> Result<ast::Query> {
         &AddAliasRewritePass,
         &PositionalSortKeyRewritePass,
         &AggregateRewritePass,
+        &WindowFunctionsRewritePass,
         &SelectRewritePass,
         &ImplicitFromRewritePass,
         &TableSubqueryRewritePass,

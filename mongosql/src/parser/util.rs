@@ -134,3 +134,59 @@ pub fn parse_like_expr(
         ))
     }
 }
+
+/// Builds a window frame, rejecting the bound combinations that can never describe a
+/// valid frame.
+///
+/// Only locally-decidable rules live here. Anything needing the surrounding `WindowSpec`
+/// -- notably that a `RANGE` frame requires a `sortBy` -- is checked by
+/// `WindowFunctionsRewritePass` instead.
+pub fn parse_window_frame(
+    units: WindowFrameUnits,
+    start: WindowFrameBound,
+    end: WindowFrameBound,
+) -> Result<WindowFrame, LalrpopError<'static>> {
+    use WindowFrameBound::*;
+
+    let invalid = match (start, end) {
+        // A frame cannot begin after every row, or end before every row.
+        (UnboundedFollowing, _) => Some("UNBOUNDED FOLLOWING cannot start a window frame"),
+        (_, UnboundedPreceding) => Some("UNBOUNDED PRECEDING cannot end a window frame"),
+        // The start bound must not sit after the end bound.
+        (CurrentRow, Preceding(_)) => Some("window frame start must not follow frame end"),
+        (Following(_), CurrentRow | Preceding(_)) => {
+            Some("window frame start must not follow frame end")
+        }
+        (Following(s), Following(e)) if s > e => {
+            Some("window frame start must not follow frame end")
+        }
+        (Preceding(s), Preceding(e)) if s < e => {
+            Some("window frame start must not follow frame end")
+        }
+        _ => None,
+    };
+
+    match invalid {
+        Some(msg) => Err(LalrpopError::from(msg.to_string())),
+        None => Ok(WindowFrame { units, start, end }),
+    }
+}
+
+/// Builds a window sort key.
+///
+/// `Tier14Expr` still derives an integer literal, so this is what makes the positional form
+/// `ORDER BY 1` a parse error inside `OVER`, where it has no meaning.
+pub fn parse_window_sort_spec(
+    key: Expression,
+    direction: Option<SortDirection>,
+) -> Result<WindowSortSpec, LalrpopError<'static>> {
+    if matches!(key, Expression::Literal(_)) {
+        return Err(LalrpopError::from(
+            "window ORDER BY key must be an expression, not a positional literal".to_string(),
+        ));
+    }
+    Ok(WindowSortSpec {
+        key,
+        direction: direction.unwrap_or(SortDirection::Asc),
+    })
+}

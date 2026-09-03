@@ -67,6 +67,9 @@ The following errors occur when something goes wrong while converting the SQL qu
 | [Error 3029](#error-3029) | The UNWIND PATH option is not an identifier. The UNWIND PATH option must be an identifier.                                                                                                                   |
 | [Error 3030](#error-3030) | The target type of the CAST is an invalid type (i.e., it's either an unknown type or a type that MongoSQL does not support casting for).                                                                     |
 | [Error 3034](#error-3034) | A sort key is invalid, because it uses complex expressions (i.e., `ORDER BY {'a': b}.a` is invalid).                                                                                                         |
+| [Error 3036](#error-3036) | DISTINCT was used in a window function, which `$setWindowFields` cannot express.                                                                                                                            |
+| [Error 3037](#error-3037) | A window-only function such as RANK or LAG was used without an OVER clause.                                                                                                                                 |
+| [Error 3038](#error-3038) | A window's ORDER BY key is not a pure field path.                                                                                                                                                           |
 
 ## Error Codes Beginning With "4" Overview
 
@@ -364,6 +367,30 @@ The following errors occur when something goes wrong while using the excludeName
     causes this error, because `CAST(d AS DOCUMENT)` is a complex expression.
 - **Resolution Steps:** Make sure you only sort by "pure" field path. A "pure" field path consists only of
     identifiers, such as `foo.d.a` or `a`.
+
+### Error 3036
+
+- **Description:** DISTINCT was used in a window function.
+- **Common Causes:** A query such as `SELECT SUM(DISTINCT a) OVER () AS s FROM foo`. The `$setWindowFields` aggregation
+    stage has no way to express a distinct accumulator, so this cannot be translated.
+- **Resolution Steps:** Remove the `DISTINCT`. If distinct semantics are required, compute them with a `GROUP BY`
+    aggregation in a subquery and apply the window function to that result.
+
+### Error 3038
+
+- **Description:** A window's `ORDER BY` key is not a pure field path.
+- **Common Causes:** Sorting a window by a computed value, such as
+    `SELECT SUM(a) OVER (ORDER BY b + c) AS s FROM foo`. The `sortBy` of a `$setWindowFields` stage accepts only field
+    paths.
+- **Resolution Steps:** Sort by a field path. Compute the value in a subquery first if you need to order by an
+    expression, then apply the window function over that column.
+
+### Error 3037
+
+- **Description:** A window-only function such as `RANK` or `LAG` was used without an `OVER` clause.
+- **Common Causes:** `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `LAG` and `LEAD` only have meaning over a window, so they
+    cannot be called like an ordinary function. For example, `SELECT RANK() AS r FROM foo` causes this error.
+- **Resolution Steps:** Add an `OVER` clause, for example `SELECT RANK() OVER (ORDER BY a) AS r FROM foo`.
 
 ### Error 4000
 - **Description:** The non-namespaced result set cannot be returned due to field name conflict(s).

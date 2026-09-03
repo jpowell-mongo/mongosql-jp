@@ -1,5 +1,5 @@
 use crate::{
-    air::{AggregationFunction, DatePart, MqlOperator, SqlOperator},
+    air::{AggregationFunction, DatePart, MqlOperator, RankWindowFunction, SqlOperator},
     codegen::MqlCodeGenerator,
 };
 
@@ -40,19 +40,20 @@ impl MqlCodeGenerator {
         }
     }
 
+    /// Renders a date part as the `unit` argument of a date operator, which expects a
+    /// wrapped literal. A `$setWindowFields` range window instead wants the bare string,
+    /// so it uses [`DatePart::to_str`] directly.
     pub(crate) fn date_part_to_mql_unit(unit: DatePart) -> bson::Bson {
-        use DatePart::*;
-        bson::bson! {{"$literal": match unit {
-            Year => "year",
-            Month => "month",
-            Day => "day",
-            Hour => "hour",
-            Minute => "minute",
-            Second => "second",
-            Millisecond => "millisecond",
-            Week => "week",
-            Quarter => "quarter",
-        }}}
+        bson::bson! {{"$literal": unit.to_str()}}
+    }
+
+    pub(crate) fn rank_func_to_mql_op(rank_func: RankWindowFunction) -> &'static str {
+        use RankWindowFunction::*;
+        match rank_func {
+            Rank => "$rank",
+            DenseRank => "$denseRank",
+            DocumentNumber => "$documentNumber",
+        }
     }
 
     pub(crate) fn to_mql_op(mqlo: MqlOperator) -> &'static str {

@@ -5,6 +5,7 @@ mod join; // mir::Stage::{Join, MqlIntrinsic::{EquiJoin, LateralJoin}}
 mod set; // mir::Stage::Set
 mod sort; // mir::Stage::Sort
 mod unwind; // mir::Stage::Unwind
+mod window; // mir::Stage::Window
 
 mod limit {
     use crate::{

@@ -1658,6 +1658,7 @@ impl Visitor for ConstantFoldExprVisitor<'_> {
             Stage::Sort(_) => (st, false),
             Stage::Derived(_) => (st, false),
             Stage::Unwind(_) => (st, false),
+            Stage::Window(_) => (st, false),
             Stage::MqlIntrinsic(_) => (st, false),
             Stage::Sentinel => unreachable!(),
         };

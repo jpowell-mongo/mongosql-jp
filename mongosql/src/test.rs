@@ -575,3 +575,357 @@ mod select_list_order {
         expected = vec![vec!["a".to_string()], vec!["b".to_string()]]
     );
 }
+
+/// End-to-end SQL to MQL tests for window functions.
+///
+/// These assert the `$setWindowFields` stages rather than a MIR tree, because the parts most
+/// likely to regress are how window functions are bucketed into stages and how the generated
+/// `_wfN` outputs relate to the user's own aliases.
+mod window_functions {
+    use crate::{
+        catalog::Catalog,
+        map,
+        schema::{Atomic, Document, Schema},
+        translate_sql, SqlOptions,
+    };
+    use agg_ast::definitions::Namespace;
+    use lazy_static::lazy_static;
+
+    lazy_static! {
+        static ref CATALOG: Catalog = Catalog::new(map! {
+            Namespace {database: "test".to_string(), collection: "foo".to_string()} =>
+                Schema::Document(Document {
+                    keys: map! {
+                        "a".to_string() => Schema::Atomic(Atomic::Integer),
+                        "b".to_string() => Schema::Atomic(Atomic::Integer),
+                        "c".to_string() => Schema::Atomic(Atomic::String),
+                    },
+                    required: map! {},
+                    additional_properties: false,
+                    ..Default::default()
+                }),
+            Namespace {database: "test".to_string(), collection: "stock_price".to_string()} =>
+                Schema::Document(Document {
+                    keys: map! {
+                        "order_date".to_string() => Schema::Atomic(Atomic::Date),
+                        "price".to_string() => Schema::Atomic(Atomic::Double),
+                    },
+                    required: map! {},
+                    additional_properties: false,
+                    ..Default::default()
+                }),
+        });
+    }
+
+    /// The `$setWindowFields` stages of the translated pipeline, as extended JSON strings.
+    fn window_stages(sql: &str) -> Vec<String> {
+        let t = translate_sql("test", sql, &*CATALOG, SqlOptions::default())
+            .unwrap_or_else(|e| panic!("{sql} failed to translate: {e}"));
+        t.pipeline
+            .as_array()
+            .expect("pipeline should be an array")
+            .iter()
+            .filter_map(|s| s.as_document().and_then(|d| d.get("$setWindowFields")))
+            .map(|s| s.to_string().replace(' ', ""))
+            .collect()
+    }
+
+    /// The final `$project` before the result is unwrapped, which is where the user's own
+    /// aliases appear.
+    fn final_projection(sql: &str) -> String {
+        let t = translate_sql("test", sql, &*CATALOG, SqlOptions::default())
+            .unwrap_or_else(|e| panic!("{sql} failed to translate: {e}"));
+        t.pipeline
+            .as_array()
+            .expect("pipeline should be an array")
+            .iter()
+            .filter_map(|s| s.as_document().and_then(|d| d.get("$project")))
+            .last()
+            .expect("expected a $project stage")
+            .to_string()
+            .replace(' ', "")
+    }
+
+    fn error(sql: &str) -> String {
+        translate_sql("test", sql, &*CATALOG, SqlOptions::default())
+            .err()
+            .unwrap_or_else(|| panic!("{sql} unexpectedly translated"))
+            .to_string()
+    }
+
+    macro_rules! window_stages_test {
+        ($name:ident, sql = $sql:expr, expected = $expected:expr) => {
+            #[test]
+            fn $name() {
+                assert_eq!($expected.to_vec(), window_stages($sql));
+            }
+        };
+    }
+
+    macro_rules! error_test {
+        ($name:ident, sql = $sql:expr, expected = $expected:expr) => {
+            #[test]
+            fn $name() {
+                assert_eq!($expected.to_string(), error($sql));
+            }
+        };
+    }
+
+    window_stages_test!(
+        no_partition_or_sort,
+        sql = "SELECT SUM(a) OVER () AS total FROM foo",
+        expected = [r#"{"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#]
+    );
+
+    window_stages_test!(
+        partition_and_sort,
+        sql = "SELECT SUM(a) OVER (PARTITION BY b ORDER BY a) AS running FROM foo",
+        expected =
+            [r#"{"partitionBy":"$foo.b","sortBy":{"foo.a":1},"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#]
+    );
+
+    // Several partition keys become a document, the way $group builds a compound _id.
+    window_stages_test!(
+        multiple_partition_keys_become_a_document,
+        sql = "SELECT SUM(a) OVER (PARTITION BY b, c) AS s FROM foo",
+        expected =
+            [r#"{"partitionBy":{"_partition0":"$foo.b","_partition1":"$foo.c"},"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#]
+    );
+
+    // Sharing a specification means sharing a stage, even though the frames differ.
+    window_stages_test!(
+        same_specification_shares_one_stage,
+        sql = "SELECT SUM(a) OVER (PARTITION BY b) AS s, AVG(a) OVER (PARTITION BY b) AS av FROM foo",
+        expected =
+            [r#"{"partitionBy":"$foo.b","output":{"__bot._wf1":{"$sum":"$foo.a"},"__bot._wf2":{"$avg":"$foo.a"}}}"#]
+    );
+
+    // Differing specifications cannot share a stage, because $setWindowFields carries only
+    // one partitionBy/sortBy, so they become a chain.
+    window_stages_test!(
+        different_specifications_chain_stages,
+        sql = "SELECT SUM(a) OVER (PARTITION BY b) AS s, RANK() OVER (ORDER BY a) AS r FROM foo",
+        expected = [
+            r#"{"partitionBy":"$foo.b","output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#,
+            r#"{"sortBy":{"foo.a":1},"output":{"__bot._wf2":{"$rank":{}}}}"#
+        ]
+    );
+
+    // The frame is per output field, so two functions with different frames still share a stage.
+    window_stages_test!(
+        differing_frames_share_a_stage,
+        sql = "SELECT SUM(a) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS w, \
+               SUM(a) OVER (ORDER BY b) AS t FROM foo",
+        expected =
+            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$sum":"$foo.a","window":{"documents":[-2,"current"]}},"__bot._wf2":{"$sum":"$foo.a"}}}"#]
+    );
+
+    window_stages_test!(
+        count_star_uses_the_count_operator,
+        sql = "SELECT COUNT(*) OVER () AS n FROM foo",
+        expected = [r#"{"output":{"__bot._wf1":{"$count":{}}}}"#]
+    );
+
+    // LAG looks backwards, so the offset is negated; LEAD does not.
+    window_stages_test!(
+        lag_negates_the_offset,
+        sql = "SELECT LAG(a, 1) OVER (ORDER BY b) AS prev FROM foo",
+        expected =
+            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":-1}}}}"#]
+    );
+
+    window_stages_test!(
+        lead_with_default,
+        sql = "SELECT LEAD(a, 2, 0) OVER (ORDER BY b) AS nxt FROM foo",
+        expected =
+            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":2,"default":{"$literal":0}}}}}"#]
+    );
+
+    window_stages_test!(
+        omitted_shift_offset_defaults_to_one,
+        sql = "SELECT LAG(a) OVER (ORDER BY b) AS prev FROM foo",
+        expected =
+            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$shift":{"output":"$foo.a","by":-1}}}}"#]
+    );
+
+    window_stages_test!(
+        row_number_maps_to_document_number,
+        sql = "SELECT ROW_NUMBER() OVER (PARTITION BY c ORDER BY a DESC) AS rn FROM foo",
+        expected =
+            [r#"{"partitionBy":"$foo.c","sortBy":{"foo.a":-1},"output":{"__bot._wf1":{"$documentNumber":{}}}}"#]
+    );
+
+    window_stages_test!(
+        range_frame,
+        sql = "SELECT SUM(a) OVER (ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
+        expected =
+            [r#"{"sortBy":{"foo.b":1},"output":{"__bot._wf1":{"$sum":"$foo.a","window":{"range":["unbounded","current"]}}}}"#]
+    );
+
+    // The stage is additive, so ordinary columns selected alongside a window function survive.
+    #[test]
+    fn non_window_columns_survive() {
+        assert_eq!(
+            r#"{"__bot":{"a":"$foo.a","s":"$__bot._wf1"},"_id":0}"#,
+            final_projection("SELECT a, SUM(a) OVER (PARTITION BY b) AS s FROM foo")
+        );
+    }
+
+    mod aliases {
+        use super::*;
+
+        // The user's alias appears in the projection; `_wfN` stays internal to the stage.
+        #[test]
+        fn user_alias_is_projected_from_the_internal_name() {
+            assert_eq!(
+                r#"{"__bot":{"total":"$__bot._wf1"},"_id":0}"#,
+                final_projection("SELECT SUM(a) OVER () AS total FROM foo")
+            );
+        }
+
+        #[test]
+        fn several_aliases_over_one_stage() {
+            let sql =
+                "SELECT SUM(a) OVER (PARTITION BY b) AS s, AVG(a) OVER (PARTITION BY b) AS av FROM foo";
+            assert_eq!(
+                r#"{"__bot":{"s":"$__bot._wf1","av":"$__bot._wf2"},"_id":0}"#,
+                final_projection(sql)
+            );
+        }
+
+        // Two textually identical window calls collapse to one output field but keep both
+        // user aliases, so de-duplication is invisible to the caller.
+        #[test]
+        fn duplicate_expressions_share_one_output_field() {
+            let sql = "SELECT SUM(a) OVER () AS x, SUM(a) OVER () AS y FROM foo";
+            assert_eq!(
+                vec![r#"{"output":{"__bot._wf1":{"$sum":"$foo.a"}}}"#.to_string()],
+                window_stages(sql)
+            );
+            assert_eq!(
+                r#"{"__bot":{"x":"$__bot._wf1","y":"$__bot._wf1"},"_id":0}"#,
+                final_projection(sql)
+            );
+        }
+
+        // A user alias cannot capture a generated name: the generated names live under the
+        // Bottom datasource and are only ever referenced by the expression built at hoist time.
+        #[test]
+        fn user_alias_colliding_with_the_generated_namespace() {
+            assert_eq!(
+                r#"{"__bot":{"_wf1":"$__bot._wf1"},"_id":0}"#,
+                final_projection("SELECT SUM(a) OVER () AS _wf1 FROM foo")
+            );
+        }
+
+        #[test]
+        fn user_alias_colliding_with_a_source_column() {
+            assert_eq!(
+                r#"{"__bot":{"a":"$__bot._wf1"},"_id":0}"#,
+                final_projection("SELECT SUM(a) OVER () AS a FROM foo")
+            );
+        }
+
+        // An unaliased window function is named positionally by AddAliasRewritePass, so the
+        // two aliasing mechanisms have to compose.
+        #[test]
+        fn unaliased_window_function_gets_a_positional_alias() {
+            assert_eq!(
+                r#"{"__bot":{"_1":"$__bot._wf1"},"_id":0}"#,
+                final_projection("SELECT SUM(a) OVER () FROM foo")
+            );
+        }
+    }
+
+    // An aggregation nested inside a window argument is hoisted into the GROUP BY by
+    // AggregateRewritePass, and the window then reads its output. The window's own callee is
+    // a bare FunctionExpr, so it is never mistaken for a group aggregation.
+    window_stages_test!(
+        aggregate_nested_in_a_window_argument,
+        sql = "SELECT SUM(SUM(a)) OVER () AS s FROM foo GROUP BY b AS b",
+        expected = [r#"{"output":{"__bot._wf1":{"$sum":"$__bot._agg1"}}}"#]
+    );
+
+    // A plain aggregate does not gain a window stage, and a window function does not
+    // synthesize an implicit GROUP BY.
+    #[test]
+    fn window_function_does_not_create_an_implicit_group() {
+        let t = translate_sql(
+            "test",
+            "SELECT SUM(a) OVER () AS s FROM foo",
+            &*CATALOG,
+            SqlOptions::default(),
+        )
+        .unwrap();
+        assert!(t
+            .pipeline
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s.as_document().map(|d| !d.contains_key("$group")) != Some(false)));
+    }
+
+    /// Period-over-period comparison, the motivating use case: a value alongside its own
+    /// lagged value and the delta between them.
+    mod period_over_period {
+        use super::*;
+
+        const SQL: &str = "SELECT order_date, price, \
+             LAG(price) OVER (ORDER BY order_date) AS one_day_before, \
+             price - LAG(price) OVER (ORDER BY order_date) AS daily_change \
+             FROM stock_price";
+
+        // The same window call appears twice, once on its own and once inside an
+        // arithmetic expression. De-duplication must collapse them to a single $shift.
+        #[test]
+        fn identical_window_calls_collapse_to_one_shift() {
+            assert_eq!(
+                vec![
+                    r#"{"sortBy":{"stock_price.order_date":1},"output":{"__bot._wf1":{"$shift":{"output":"$stock_price.price","by":-1}}}}"#
+                        .to_string()
+                ],
+                window_stages(SQL)
+            );
+        }
+
+        // Both the bare reference and the subtraction read the same generated field.
+        #[test]
+        fn both_outputs_reference_the_same_generated_field() {
+            assert_eq!(
+                r#"{"__bot":{"order_date":"$stock_price.order_date","price":"$stock_price.price","one_day_before":"$__bot._wf1","daily_change":{"$subtract":["$stock_price.price","$__bot._wf1"]}},"_id":0}"#,
+                final_projection(SQL)
+            );
+        }
+    }
+
+    error_test!(
+        distinct_is_rejected,
+        sql = "SELECT SUM(DISTINCT a) OVER () AS s FROM foo",
+        expected = "algebrize error: Error 3036: DISTINCT is not supported in the window function `SUM(DISTINCT a) OVER ()`.\n\tCaused by:\n\tDISTINCT is not supported in a window function: SUM(DISTINCT a) OVER ()"
+    );
+
+    error_test!(
+        rank_without_over_is_rejected,
+        sql = "SELECT RANK() AS r FROM foo",
+        expected = "algebrize error: Error 3037: `RANK()` is a window function and requires an OVER clause, for example `RANK() OVER (PARTITION BY ... ORDER BY ...)`.\n\tCaused by:\n\twindow function used without an OVER clause: RANK()"
+    );
+
+    error_test!(
+        window_function_in_where_is_rejected,
+        sql = "SELECT a AS a FROM foo WHERE SUM(a) OVER () > 1",
+        expected = "rewrite error: window functions are not allowed in the WHERE clause"
+    );
+
+    error_test!(
+        window_function_in_select_values_is_rejected,
+        sql = "SELECT VALUE {'s': SUM(a) OVER ()} FROM foo",
+        expected = "rewrite error: window functions are not allowed in a SELECT VALUE body"
+    );
+
+    error_test!(
+        range_frame_without_order_by_is_rejected,
+        sql = "SELECT SUM(a) OVER (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
+        expected =
+            "rewrite error: a RANGE window frame requires an ORDER BY in its window specification"
+    );
+}

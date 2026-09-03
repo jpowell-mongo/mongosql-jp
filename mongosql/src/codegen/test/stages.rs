@@ -1017,3 +1017,74 @@ mod equilookup {
         }),
     );
 }
+
+mod set_window_fields {
+    use crate::air::{self, SetWindowFields};
+
+    fn source() -> Box<air::Stage> {
+        Box::new(air::Stage::Collection(air::Collection {
+            db: "test_db".to_string(),
+            collection: "foo".to_string(),
+        }))
+    }
+
+    fn field(name: &str, f: air::WindowFunction) -> air::SetWindowFieldsOutputField {
+        air::SetWindowFieldsOutputField {
+            name: name.to_string(),
+            window_function: f,
+        }
+    }
+
+    // $count takes an empty document, like the rank operators, rather than an argument like
+    // an accumulator. It is unrelated to the $sqlCount that $group lowers SQL COUNT to.
+    test_codegen_stage!(
+        count_operator,
+        expected = Ok({
+            database: Some("test_db".to_string()),
+            collection: Some("foo".to_string()),
+            pipeline: vec![bson::doc!{
+                "$setWindowFields": {"output": {"n": {"$count": {}}}}
+            }],
+        }),
+        input = air::Stage::SetWindowFields(
+            SetWindowFields::new(source(), None, None, vec![field("n", air::WindowFunction::Count)])
+                .unwrap()
+        ),
+    );
+
+    // Output names are dotted paths, which $setWindowFields treats with $addFields
+    // semantics, so the result lands inside the __bot subdocument.
+    test_codegen_stage!(
+        dotted_output_name,
+        expected = Ok({
+            database: Some("test_db".to_string()),
+            collection: Some("foo".to_string()),
+            pipeline: vec![bson::doc!{
+                "$setWindowFields": {
+                    "partitionBy": "$b",
+                    "sortBy": {"a": 1},
+                    "output": {"__bot._wf1": {"$sum": "$a", "window": {"documents": [-2i64, "current"]}}},
+                }
+            }],
+        }),
+        input = air::Stage::SetWindowFields(
+            SetWindowFields::new(
+                source(),
+                Some(air::Expression::FieldRef("b".to_string().into())),
+                Some(vec![air::SortSpecification::Asc("a".to_string())]),
+                vec![field(
+                    "__bot._wf1",
+                    air::WindowFunction::Aggregation(air::AggregationWindowFunction {
+                        function: air::AggregationFunction::Sum,
+                        expression: Box::new(air::Expression::FieldRef("a".to_string().into())),
+                        window: Some(air::WindowBounds::Documents(air::WindowRange {
+                            lower: air::WindowBoundary::Position(-2),
+                            upper: air::WindowBoundary::Current,
+                        })),
+                    })
+                )],
+            )
+            .unwrap()
+        ),
+    );
+}

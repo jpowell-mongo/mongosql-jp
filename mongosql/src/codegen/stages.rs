@@ -28,8 +28,108 @@ impl MqlCodeGenerator {
         }
     }
 
-    fn codegen_set_window_fields(&self, air_set_window_fields: air::SetWindowFields) -> Result<MqlTranslation> {
-        unimplemented!()
+    fn codegen_set_window_fields(
+        &self,
+        air_set_window_fields: air::SetWindowFields,
+    ) -> Result<MqlTranslation> {
+        let source_translation = self.codegen_stage(*air_set_window_fields.source)?;
+        let mut pipeline = source_translation.pipeline;
+
+        let mut body = doc! {};
+        if let Some(partition_by) = air_set_window_fields.partition_by {
+            body.insert("partitionBy", self.codegen_expression(partition_by)?);
+        }
+        if let Some(sort_by) = air_set_window_fields.sort_by {
+            body.insert("sortBy", Self::codegen_sort_specs(sort_by));
+        }
+
+        let output = air_set_window_fields
+            .output_fields
+            .into_iter()
+            .map(
+                |air::SetWindowFieldsOutputField {
+                     name,
+                     window_function,
+                 }| {
+                    Ok((
+                        name,
+                        Bson::Document(self.codegen_window_function(window_function)?),
+                    ))
+                },
+            )
+            .collect::<Result<bson::Document>>()?;
+        body.insert("output", output);
+
+        pipeline.push(doc! {"$setWindowFields": body});
+        Ok(MqlTranslation {
+            database: source_translation.database,
+            collection: source_translation.collection,
+            pipeline,
+        })
+    }
+
+    /// Renders a single window operator, e.g. `{"$sum": "$quantity", "window": {...}}`.
+    fn codegen_window_function(&self, func: air::WindowFunction) -> Result<bson::Document> {
+        match func {
+            air::WindowFunction::Aggregation(agg) => {
+                // $group wraps accumulator arguments in an array via
+                // codegen_mql_semantic_operator; window operators take the argument
+                // directly, so this deliberately does not reuse that path.
+                let mut doc = doc! {
+                    Self::agg_func_to_mql_op(agg.function):
+                        self.codegen_expression(*agg.expression)?,
+                };
+                if let Some(window) = agg.window {
+                    doc.insert("window", Self::codegen_window_bounds(window));
+                }
+                Ok(doc)
+            }
+            // $count takes an empty document, like the rank operators.
+            air::WindowFunction::Count => Ok(doc! { "$count": {} }),
+            // Rank operators take an empty document and derive their window from the sort.
+            air::WindowFunction::Rank(rank) => Ok(doc! { Self::rank_func_to_mql_op(rank): {} }),
+            air::WindowFunction::Shift(shift) => {
+                let mut args = doc! {
+                    "output": self.codegen_expression(*shift.output)?,
+                    "by": shift.by,
+                };
+                // MongoDB defaults an omitted `default` to null.
+                if let Some(default) = shift.default {
+                    args.insert("default", self.codegen_expression(*default)?);
+                }
+                Ok(doc! { "$shift": args })
+            }
+        }
+    }
+
+    fn codegen_window_bounds(bounds: air::WindowBounds) -> bson::Document {
+        match bounds {
+            air::WindowBounds::Documents(range) => {
+                doc! {"documents": Self::codegen_window_range(range)}
+            }
+            air::WindowBounds::Range(range) => doc! {"range": Self::codegen_window_range(range)},
+            air::WindowBounds::TimeRange(air::TimeRange { bounds, unit }) => doc! {
+                "range": Self::codegen_window_range(bounds),
+                // A window `unit` is a bare string, unlike the wrapped literal that
+                // date_part_to_mql_unit produces for $dateAdd and friends.
+                "unit": unit.to_str(),
+            },
+        }
+    }
+
+    fn codegen_window_range(range: air::WindowRange) -> Bson {
+        Bson::Array(vec![
+            Self::codegen_window_boundary(range.lower),
+            Self::codegen_window_boundary(range.upper),
+        ])
+    }
+
+    fn codegen_window_boundary(boundary: air::WindowBoundary) -> Bson {
+        match boundary {
+            air::WindowBoundary::Unbounded => Bson::String("unbounded".to_string()),
+            air::WindowBoundary::Current => Bson::String("current".to_string()),
+            air::WindowBoundary::Position(n) => Bson::Int64(n),
+        }
     }
 
     fn codegen_union_with(&self, air_union_with: air::UnionWith) -> Result<MqlTranslation> {
@@ -52,22 +152,24 @@ impl MqlCodeGenerator {
         })
     }
 
-    fn codegen_sort(&self, air_sort: air::Sort) -> Result<MqlTranslation> {
+    /// Renders sort specifications as the `{<key>: 1 | -1}` document shared by the
+    /// `$sort` stage and the `sortBy` field of `$setWindowFields`.
+    fn codegen_sort_specs(specs: Vec<air::SortSpecification>) -> bson::Document {
         use air::SortSpecification::*;
 
+        specs
+            .into_iter()
+            .map(|spec| match spec {
+                Asc(key) => (key, Bson::Int32(1)),
+                Desc(key) => (key, Bson::Int32(-1)),
+            })
+            .collect()
+    }
+
+    fn codegen_sort(&self, air_sort: air::Sort) -> Result<MqlTranslation> {
         let source_translation = self.codegen_stage(*air_sort.source)?;
         let mut pipeline = source_translation.pipeline;
-        let sort_specs = air_sort
-            .specs
-            .into_iter()
-            .map(|spec| {
-                let (key, direction) = match spec {
-                    Asc(key) => (key, Bson::Int32(1)),
-                    Desc(key) => (key, Bson::Int32(-1)),
-                };
-                Ok((key, direction))
-            })
-            .collect::<Result<bson::Document>>()?;
+        let sort_specs = Self::codegen_sort_specs(air_sort.specs);
 
         pipeline.push(doc! {"$sort": sort_specs});
         Ok(MqlTranslation {

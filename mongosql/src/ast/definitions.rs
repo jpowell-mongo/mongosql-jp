@@ -304,6 +304,7 @@ pub enum Expression {
     Tuple(Vec<Expression>),
     TypeAssertion(TypeAssertionExpr),
     HigherOrderFunction(HigherOrderFunctionExpr),
+    Window(WindowFunctionExpr),
 }
 
 impl Expression {
@@ -507,6 +508,14 @@ pub enum FunctionName {
     ArrayAll,
     ArrayAny,
     ArrayJoin,
+
+    // Window-only functions. These are never GROUP BY aggregations; they are only legal
+    // as the callee of a `WindowFunctionExpr`.
+    Rank,
+    DenseRank,
+    RowNumber,
+    Lag,
+    Lead,
 }
 
 impl TryFrom<FunctionName> for TrimSpec {
@@ -662,6 +671,12 @@ impl TryFrom<&str> for FunctionName {
             "ARRAY_ALL" => Ok(FunctionName::ArrayAll),
             "ARRAY_ANY" => Ok(FunctionName::ArrayAny),
             "ARRAY_JOIN" => Ok(FunctionName::ArrayJoin),
+
+            "RANK" => Ok(FunctionName::Rank),
+            "DENSE_RANK" => Ok(FunctionName::DenseRank),
+            "ROW_NUMBER" => Ok(FunctionName::RowNumber),
+            "LAG" => Ok(FunctionName::Lag),
+            "LEAD" => Ok(FunctionName::Lead),
             _ => Err(format!("unknown function {name}")),
         }
     }
@@ -737,6 +752,11 @@ impl FunctionName {
             FunctionName::ArrayAll => "ARRAY_ALL",
             FunctionName::ArrayAny => "ARRAY_ANY",
             FunctionName::ArrayJoin => "ARRAY_JOIN",
+            FunctionName::Rank => "RANK",
+            FunctionName::DenseRank => "DENSE_RANK",
+            FunctionName::RowNumber => "ROW_NUMBER",
+            FunctionName::Lag => "LAG",
+            FunctionName::Lead => "LEAD",
         }
     }
 
@@ -808,7 +828,12 @@ impl FunctionName {
             | FunctionName::ArrayAvg
             | FunctionName::ArrayAll
             | FunctionName::ArrayAny
-            | FunctionName::ArrayJoin => false,
+            | FunctionName::ArrayJoin
+            | FunctionName::Rank
+            | FunctionName::DenseRank
+            | FunctionName::RowNumber
+            | FunctionName::Lag
+            | FunctionName::Lead => false,
         }
     }
 }
@@ -1046,5 +1071,76 @@ pub enum NamedFunction {
     BinaryOp(BinaryOp),
     Function(FunctionName),
 }
+
+
+// Begin: window function type definitions.
+//
+// SQL window functions, e.g. `SUM(x) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN ...)`,
+// modelled on MySQL 8.0. Deliberately excluded for now: INTERVAL frame offsets, named
+// windows (`OVER w`), and MySQL's bare-frame shorthand (`ROWS UNBOUNDED PRECEDING`).
+
+/// A window function call: a function applied over a window rather than over a group.
+///
+/// This is a distinct `Expression` variant rather than an `over` field on [`FunctionExpr`]
+/// so that `AggregateRewritePass`, which matches `Expression::Function`, cannot hoist a
+/// window aggregate into a `GROUP BY` aggregation list.
+#[derive(PartialEq, Debug, Clone)]
+pub struct WindowFunctionExpr {
+    pub function: FunctionExpr,
+    pub over: WindowSpec,
+}
+
+/// The contents of `OVER (...)`. Every clause is optional, so `OVER ()` is valid and
+/// means a single partition covering the whole input.
+#[derive(PartialEq, Debug, Clone)]
+pub struct WindowSpec {
+    pub partition_by: Vec<Expression>,
+    pub order_by: Vec<WindowSortSpec>,
+    /// `None` means no frame clause was written. The default frame depends on whether
+    /// `order_by` is empty, and is resolved during algebrization rather than here, so
+    /// that this type records only what the user actually wrote.
+    pub frame: Option<WindowFrame>,
+}
+
+/// A sort key inside `OVER (...)`.
+///
+/// Distinct from [`SortSpec`] because a window sort key may not be positional: `ORDER BY 1`
+/// is meaningless inside a window, and keeping it unrepresentable also puts
+/// `PositionalSortKeyRewritePass` structurally out of reach of the window clause.
+#[derive(PartialEq, Debug, Clone)]
+pub struct WindowSortSpec {
+    pub key: Expression,
+    pub direction: SortDirection,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct WindowFrame {
+    pub units: WindowFrameUnits,
+    pub start: WindowFrameBound,
+    pub end: WindowFrameBound,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy, VariantCount)]
+pub enum WindowFrameUnits {
+    Rows,
+    Range,
+}
+
+/// A single frame boundary.
+///
+/// Offsets are unsigned, with the direction carried by the variant, matching MySQL's
+/// restriction that a `ROWS` offset be a non-negative literal. This is also what keeps the
+/// grammar unambiguous: because a bound is never an `Expression`, the `AND` separating two
+/// bounds cannot be confused with the boolean `AND` operator.
+#[derive(PartialEq, Eq, Debug, Clone, Copy, VariantCount)]
+pub enum WindowFrameBound {
+    UnboundedPreceding,
+    UnboundedFollowing,
+    CurrentRow,
+    Preceding(u32),
+    Following(u32),
+}
+
+// End: window function type definitions.
 
 } // end of generate_visitors! block

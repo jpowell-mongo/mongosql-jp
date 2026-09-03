@@ -20,11 +20,84 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
 };
 
 type Result<T> = std::result::Result<T, Error>;
+
+/// Collects the window functions in a SELECT clause, de-duplicated on their printed form so
+/// two textually identical calls share a single output field. Insertion order is preserved.
+fn collect_window_functions(
+    select_clause: &ast::SelectClause,
+) -> Vec<(String, ast::WindowFunctionExpr)> {
+    #[derive(Default)]
+    struct WindowCollector {
+        found: Vec<(String, ast::WindowFunctionExpr)>,
+    }
+    impl ast::visitor_ref::VisitorRef for WindowCollector {
+        fn visit_window_function_expr(&mut self, node: &ast::WindowFunctionExpr) {
+            let key = ast::Expression::Window(node.clone()).pretty_print().unwrap();
+            if !self.found.iter().any(|(k, _)| *k == key) {
+                self.found.push((key, node.clone()));
+            }
+        }
+    }
+    let mut collector = WindowCollector::default();
+    ast::visitor_ref::VisitorRef::visit_select_clause(&mut collector, select_clause);
+    collector.found
+}
+
+/// The bucketing key for a window specification: two functions share a `$setWindowFields`
+/// stage only when their partitioning and ordering match. The frame is deliberately excluded
+/// because it is per-output-field.
+fn window_spec_key(spec: &ast::WindowSpec) -> String {
+    let partition = spec
+        .partition_by
+        .iter()
+        .map(|e| e.pretty_print().unwrap())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order = spec
+        .order_by
+        .iter()
+        .map(|s| {
+            format!(
+                "{}{}",
+                s.key.pretty_print().unwrap(),
+                s.direction.pretty_print().unwrap()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("PARTITION BY {partition} ORDER BY {order}")
+}
+
+fn algebrize_window_frame(frame: ast::WindowFrame) -> mir::WindowFrame {
+    mir::WindowFrame {
+        units: match frame.units {
+            ast::WindowFrameUnits::Rows => mir::WindowFrameUnits::Documents,
+            ast::WindowFrameUnits::Range => mir::WindowFrameUnits::Range,
+        },
+        bounds: mir::WindowRange {
+            lower: algebrize_window_bound(frame.start),
+            upper: algebrize_window_bound(frame.end),
+        },
+    }
+}
+
+/// SQL carries the direction in the variant with an unsigned offset; MIR carries a signed
+/// offset, negative meaning before the current document.
+fn algebrize_window_bound(b: ast::WindowFrameBound) -> mir::WindowBoundary {
+    match b {
+        ast::WindowFrameBound::UnboundedPreceding | ast::WindowFrameBound::UnboundedFollowing => {
+            mir::WindowBoundary::Unbounded
+        }
+        ast::WindowFrameBound::CurrentRow => mir::WindowBoundary::Current,
+        ast::WindowFrameBound::Preceding(n) => mir::WindowBoundary::Position(-(n as i64)),
+        ast::WindowFrameBound::Following(n) => mir::WindowBoundary::Position(n as i64),
+    }
+}
 
 macro_rules! schema_check_return {
     ($self:ident, $e:expr $(,)?) => {{
@@ -130,6 +203,15 @@ impl TryFrom<ast::FunctionName> for mir::ScalarFunction {
             | ast::FunctionName::Sum => {
                 return Err(Error::AggregationInPlaceOfScalar(f.pretty_print().unwrap()))
             }
+            // Window-only functions are only legal as the callee of a window function
+            // expression, which never reaches this conversion.
+            ast::FunctionName::Rank
+            | ast::FunctionName::DenseRank
+            | ast::FunctionName::RowNumber
+            | ast::FunctionName::Lag
+            | ast::FunctionName::Lead => {
+                return Err(Error::WindowFunctionWithoutOver(f.pretty_print().unwrap()))
+            }
         })
     }
 }
@@ -207,6 +289,15 @@ impl TryFrom<ast::FunctionName> for mir::AggregationFunction {
             | ast::FunctionName::ArrayJoin => {
                 return Err(Error::ScalarInPlaceOfAggregation(f.pretty_print().unwrap()))
             }
+            // Window-only functions are only legal as the callee of a window function
+            // expression, which never reaches this conversion.
+            ast::FunctionName::Rank
+            | ast::FunctionName::DenseRank
+            | ast::FunctionName::RowNumber
+            | ast::FunctionName::Lag
+            | ast::FunctionName::Lead => {
+                return Err(Error::WindowFunctionWithoutOver(f.pretty_print().unwrap()))
+            }
         })
     }
 }
@@ -235,6 +326,7 @@ pub enum ClauseType {
     Select,
     Unintialized,
     Where,
+    Window,
 }
 
 impl std::fmt::Display for ClauseType {
@@ -249,6 +341,7 @@ impl std::fmt::Display for ClauseType {
             ClauseType::Select => write!(f, "SELECT"),
             ClauseType::Unintialized => write!(f, "UNINITIALIZED"),
             ClauseType::Where => write!(f, "WHERE"),
+            ClauseType::Window => write!(f, "OVER"),
         }
     }
 }
@@ -263,6 +356,11 @@ pub struct Algebrizer<'a> {
     allow_order_by_missing_columns: bool,
     clause_type: RefCell<ClauseType>,
     expression_context: ExpressionContext,
+    /// Window functions already hoisted into a `Stage::Window`, keyed by the pretty-printed
+    /// source expression and mapping to the field access that reads the hoisted output.
+    /// Populated by `algebrize_window_functions` before the SELECT clause is algebrized, so
+    /// `algebrize_expression` resolves a window call directly rather than by name.
+    window_exprs: Rc<HashMap<String, mir::Expression>>,
 }
 
 /// ExpressionContext contains information about the context in which an expression is being
@@ -355,6 +453,201 @@ impl<'a> Algebrizer<'a> {
             allow_order_by_missing_columns,
             clause_type: RefCell::new(clause_type),
             expression_context,
+            window_exprs: Rc::new(HashMap::new()),
+        }
+    }
+
+    fn with_window_exprs(&self, window_exprs: HashMap<String, mir::Expression>) -> Self {
+        Self {
+            clause_type: RefCell::new(*self.clause_type.borrow()),
+            expression_context: self.expression_context.clone(),
+            schema_env: self.schema_env.clone(),
+            window_exprs: Rc::new(window_exprs),
+            ..*self
+        }
+    }
+
+    /// Hoists every window function in the SELECT clause into one or more `Stage::Window`s,
+    /// returning the new plan and a map from each window call's printed form to the
+    /// expression that reads its output.
+    ///
+    /// MQL allows a single partitionBy/sortBy per `$setWindowFields` but a per-output-field
+    /// window, so functions sharing a specification share a stage and differing
+    /// specifications produce a chain.
+    fn algebrize_window_functions(
+        &self,
+        select_clause: &ast::SelectClause,
+        source: mir::Stage,
+    ) -> Result<(mir::Stage, HashMap<String, mir::Expression>)> {
+        let collected = collect_window_functions(select_clause);
+        if collected.is_empty() {
+            return Ok((source, HashMap::new()));
+        }
+
+        *self.clause_type.borrow_mut() = ClauseType::Window;
+
+        // Bucket by specification, preserving first-seen order so the emitted chain is
+        // deterministic. The key is the printed spec, which is exactly the equality we want.
+        let mut buckets: Vec<(ast::WindowSpec, Vec<(String, ast::WindowFunctionExpr)>)> = Vec::new();
+        for (key, w) in collected {
+            let spec_key = window_spec_key(&w.over);
+            match buckets
+                .iter_mut()
+                .find(|(spec, _)| window_spec_key(spec) == spec_key)
+            {
+                Some((_, fns)) => fns.push((key, w)),
+                None => buckets.push((w.over.clone(), vec![(key, w)])),
+            }
+        }
+
+        // Every bucket is algebrized against the ORIGINAL pre-window environment. SQL
+        // evaluates all window functions over the same input relation, and because this
+        // stage is additive every pre-window binding survives, so the expressions stay
+        // valid against the later environments in the chain.
+        let expression_algebrizer = self
+            .with_merged_mappings(source.schema(&self.schema_inference_state())?.schema_env)?
+            .with_implicit_type_conversion_ctx(false);
+
+        let mut plan = source;
+        let mut next_id = 1usize;
+        let mut window_exprs = HashMap::new();
+        for (spec, fns) in buckets {
+            let partition_by = spec
+                .partition_by
+                .iter()
+                .map(|e| expression_algebrizer.algebrize_expression(e.clone()))
+                .collect::<Result<Vec<_>>>()?;
+            let sort_by = spec
+                .order_by
+                .iter()
+                .map(|s| {
+                    let key = expression_algebrizer.algebrize_expression(s.key.clone())?;
+                    let path: mir::FieldPath = key
+                        .clone()
+                        .try_into()
+                        .map_err(|_| Error::InvalidWindowSortKey(key))?;
+                    Ok(match s.direction {
+                        ast::SortDirection::Asc => mir::SortSpecification::Asc(path),
+                        ast::SortDirection::Desc => mir::SortSpecification::Desc(path),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let mut functions = Vec::new();
+            let mut aliases = Vec::new();
+            for (key, w) in fns {
+                let alias = format!("_wf{next_id}");
+                next_id += 1;
+                functions.push(mir::AliasedWindowFunction {
+                    alias: alias.clone(),
+                    window_expr: expression_algebrizer.algebrize_window_expr(&w)?,
+                });
+                aliases.push((key, alias));
+            }
+
+            plan = mir::Stage::Window(mir::Window {
+                source: Box::new(plan),
+                partition_by,
+                sort_by,
+                functions,
+                cache: SchemaCache::new(),
+                scope: self.scope_level,
+            });
+            // Schema the stage before building the field accesses, so is_nullable is taken
+            // from the post-window environment rather than the pre-window one.
+            let result_set = plan.schema(&self.schema_inference_state())?;
+            let post_window = self.with_merged_mappings(result_set.schema_env)?;
+            for (key, alias) in aliases {
+                window_exprs.insert(
+                    key,
+                    post_window.construct_field_access_expr(
+                        mir::Expression::Reference(
+                            Key::bot(self.scope_level).into(),
+                        ),
+                        alias,
+                    )?,
+                );
+            }
+        }
+
+        Ok((plan, window_exprs))
+    }
+
+    /// Lowers a single window call. The callee determines the shape: rank operators and
+    /// shifts carry no frame, `COUNT(*)` becomes the `$count` operator, and everything else
+    /// is an accumulator over the frame.
+    fn algebrize_window_expr(&self, w: &ast::WindowFunctionExpr) -> Result<mir::WindowExpr> {
+        let f = &w.function;
+        if f.set_quantifier == Some(ast::SetQuantifier::Distinct) {
+            return Err(Error::DistinctWindowFunction(
+                ast::Expression::Window(w.clone()).pretty_print().unwrap(),
+            ));
+        }
+        let frame = w.over.frame.clone().map(algebrize_window_frame);
+
+        match f.function {
+            ast::FunctionName::Rank
+            | ast::FunctionName::DenseRank
+            | ast::FunctionName::RowNumber => {
+                if !f.args.is_empty() {
+                    return Err(Error::AggregationFunctionMustHaveOneArgument);
+                }
+                Ok(mir::WindowExpr::Rank(match f.function {
+                    ast::FunctionName::Rank => mir::RankFunction::Rank,
+                    ast::FunctionName::DenseRank => mir::RankFunction::DenseRank,
+                    _ => mir::RankFunction::RowNumber,
+                }))
+            }
+            ast::FunctionName::Lag | ast::FunctionName::Lead => {
+                let args = match &f.args {
+                    ast::FunctionArguments::Star => return Err(Error::StarInNonCount),
+                    ast::FunctionArguments::Args(a) => a,
+                };
+                if args.is_empty() || args.len() > 3 {
+                    return Err(Error::AggregationFunctionMustHaveOneArgument);
+                }
+                let output = Box::new(self.algebrize_expression(args[0].clone())?);
+                // The offset defaults to 1, and LAG looks backwards.
+                let magnitude = match args.get(1) {
+                    Some(ast::Expression::Literal(ast::Literal::Integer(n))) => *n,
+                    None => 1,
+                    Some(_) => return Err(Error::AggregationFunctionMustHaveOneArgument),
+                };
+                let by = if f.function == ast::FunctionName::Lag {
+                    -magnitude
+                } else {
+                    magnitude
+                };
+                let default = args
+                    .get(2)
+                    .map(|d| self.algebrize_expression(d.clone()).map(Box::new))
+                    .transpose()?;
+                Ok(mir::WindowExpr::Shift(mir::Shift {
+                    output,
+                    by,
+                    default,
+                }))
+            }
+            // COUNT(*) counts documents, which is what $count does. COUNT(x) is different:
+            // SQL skips nulls, so it needs an accumulator over a null guard instead.
+            ast::FunctionName::Count if matches!(f.args, ast::FunctionArguments::Star) => {
+                Ok(mir::WindowExpr::CountStar)
+            }
+            _ => {
+                let args = match &f.args {
+                    ast::FunctionArguments::Star => return Err(Error::StarInNonCount),
+                    ast::FunctionArguments::Args(a) => a,
+                };
+                if args.len() != 1 {
+                    return Err(Error::AggregationFunctionMustHaveOneArgument);
+                }
+                let arg = self.algebrize_expression(args[0].clone())?;
+                Ok(mir::WindowExpr::Aggregation(mir::WindowAggregation {
+                    function: mir::AggregationFunction::try_from(f.function)?,
+                    arg: Box::new(arg),
+                    frame,
+                }))
+            }
         }
     }
 
@@ -381,6 +674,8 @@ impl<'a> Algebrizer<'a> {
             // state.
             clause_type: RefCell::new(*self.clause_type.borrow()),
             expression_context: self.expression_context.clone(),
+            // A subquery hoists its own window functions; it must not see the parent's.
+            window_exprs: Rc::new(HashMap::new()),
         }
     }
 
@@ -394,6 +689,7 @@ impl<'a> Algebrizer<'a> {
             allow_order_by_missing_columns: self.allow_order_by_missing_columns,
             clause_type: RefCell::new(*self.clause_type.borrow()),
             expression_context: context,
+            window_exprs: self.window_exprs.clone(),
         }
     }
 
@@ -472,6 +768,7 @@ impl<'a> Algebrizer<'a> {
             schema_env: Rc::new(merged_env),
             clause_type: RefCell::new(*self.clause_type.borrow()),
             expression_context: self.expression_context.clone(),
+            window_exprs: self.window_exprs.clone(),
             ..*self
         })
     }
@@ -494,17 +791,22 @@ impl<'a> Algebrizer<'a> {
         let plan = self.algebrize_where_clause(ast_node.where_clause, plan)?;
         let plan = self.algebrize_group_by_clause(ast_node.group_by_clause, plan)?;
         let plan = self.algebrize_having_clause(ast_node.having_clause, plan)?;
-        let plan = if self.allow_order_by_missing_columns
+        // Hoist window functions into one or more Window stages before SELECT is
+        // algebrized, so the field accesses that read their outputs resolve. This mirrors
+        // the Group stage already being the source when `_aggN` is resolved.
+        let (plan, window_exprs) = self.algebrize_window_functions(&ast_node.select_clause, plan)?;
+        let algebrizer = self.with_window_exprs(window_exprs);
+        let plan = if algebrizer.allow_order_by_missing_columns
             && ast_node.select_clause.set_quantifier != ast::SetQuantifier::Distinct
         {
-            self.algebrize_select_and_order_by_clause(
+            algebrizer.algebrize_select_and_order_by_clause(
                 ast_node.select_clause,
                 ast_node.order_by_clause,
                 plan,
             )?
         } else {
-            let plan = self.algebrize_select_clause(ast_node.select_clause, plan, false)?;
-            self.algebrize_order_by_clause(ast_node.order_by_clause, plan)?
+            let plan = algebrizer.algebrize_select_clause(ast_node.select_clause, plan, false)?;
+            algebrizer.algebrize_order_by_clause(ast_node.order_by_clause, plan)?
         };
         let plan = self.algebrize_offset_clause(ast_node.offset, plan)?;
         let plan = self.algebrize_limit_clause(ast_node.limit, plan)?;
@@ -1560,6 +1862,17 @@ impl<'a> Algebrizer<'a> {
             ast::Expression::SubqueryComparison(s) => self.algebrize_subquery_comparison(s),
             ast::Expression::Exists(e) => self.algebrize_exists(*e),
             ast::Expression::HigherOrderFunction(h) => self.algebrize_higher_order_function(h),
+            // Window functions are hoisted into a Stage::Window before the SELECT clause
+            // is algebrized, so by the time we get here the field access that reads the
+            // hoisted output has already been built. A missing entry means the window call
+            // appeared somewhere we never hoist from, which the rewrite pass rejects first.
+            ast::Expression::Window(w) => {
+                let key = ast::Expression::Window(w).pretty_print().unwrap();
+                self.window_exprs
+                    .get(&key)
+                    .cloned()
+                    .ok_or(Error::WindowFunctionWithoutOver(key))
+            }
             ast::Expression::ArrayCast(_) => unreachable!("ARRAY_CAST should have been rewritten"),
         }
     }
@@ -1908,6 +2221,15 @@ impl<'a> Algebrizer<'a> {
             | (ast::FunctionName::StddevSamp, _)
             | (ast::FunctionName::Sum, _) => {
                 return Err(Error::AggregationInPlaceOfScalar(f.pretty_print().unwrap()))
+            }
+            // A window-only function name reaching here means it was written without an
+            // OVER clause; `SUM(x) OVER (...)` is an `Expression::Window`, not a function.
+            (ast::FunctionName::Rank, _)
+            | (ast::FunctionName::DenseRank, _)
+            | (ast::FunctionName::RowNumber, _)
+            | (ast::FunctionName::Lag, _)
+            | (ast::FunctionName::Lead, _) => {
+                return Err(Error::WindowFunctionWithoutOver(f.pretty_print().unwrap()))
             }
             (ast::FunctionName::LTrim, _)
             | (ast::FunctionName::RTrim, _)

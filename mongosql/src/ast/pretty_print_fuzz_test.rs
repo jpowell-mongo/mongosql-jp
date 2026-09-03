@@ -647,6 +647,7 @@ mod arbitrary {
                 23 => Self::TypeAssertion(TypeAssertionExpr::arbitrary(nested_g)),
                 // 23 => Self::HigherOrderFunction(HigherOrderFunctionExpr::arbitrary(nested_g)),
                 24 => Self::ArrayCast(ArrayCastExpr::arbitrary(nested_g)),
+                25 => Self::Window(WindowFunctionExpr::arbitrary(nested_g)),
                 _ => panic!("missing Expression variant(s)"),
             }
         }
@@ -941,6 +942,13 @@ mod arbitrary {
                 59 => Self::ArrayAll,
                 60 => Self::ArrayAny,
                 61 => Self::ArrayJoin,
+
+                // Window-only functions
+                62 => Self::Rank,
+                63 => Self::DenseRank,
+                64 => Self::RowNumber,
+                65 => Self::Lag,
+                66 => Self::Lead,
                 _ => panic!("missing FunctionName variant(s)"),
             }
         }
@@ -1125,6 +1133,127 @@ mod arbitrary {
                     .collect(),
             }
         }
+    }
+
+    impl Arbitrary for WindowFunctionExpr {
+        fn arbitrary(g: &mut Gen) -> Self {
+            // Reusing FunctionExpr::arbitrary is safe because the grammar accepts OVER
+            // after any function call, including the special-syntax forms.
+            Self {
+                function: FunctionExpr::arbitrary(g),
+                over: WindowSpec::arbitrary(g),
+            }
+        }
+    }
+
+    impl Arbitrary for WindowSpec {
+        fn arbitrary(g: &mut Gen) -> Self {
+            // A RANGE frame is only legal alongside an ORDER BY, so generate the sort
+            // first and let it decide which frame units are available. Without this the
+            // generator would emit specs that parse but fail the rewrite pass.
+            let order_by: Vec<WindowSortSpec> = (0..rand_len(0, MAX_COMPOSITE_DATA_LEN))
+                .map(|_| WindowSortSpec::arbitrary(g))
+                .collect();
+            let frame = Option::<WindowFrame>::arbitrary(g).map(|f| {
+                if order_by.is_empty() {
+                    WindowFrame {
+                        units: WindowFrameUnits::Rows,
+                        ..f
+                    }
+                } else {
+                    f
+                }
+            });
+            Self {
+                partition_by: (0..rand_len(0, MAX_COMPOSITE_DATA_LEN))
+                    .map(|_| Expression::arbitrary(g))
+                    .collect(),
+                order_by,
+                frame,
+            }
+        }
+    }
+
+    impl Arbitrary for WindowSortSpec {
+        fn arbitrary(g: &mut Gen) -> Self {
+            // The key is restricted to Tier14Expr by the grammar, and a bare literal is
+            // rejected outright, so only field-path shapes round-trip here.
+            Self {
+                key: {
+                    // Mirrors the shapes SortKey::Simple generates, which are exactly the
+                    // field-path forms Tier14Expr derives.
+                    let rng = &(0..2).collect::<Vec<i32>>();
+                    match g.choose(rng).unwrap() {
+                        0 => Expression::Identifier(arbitrary_identifier(g)),
+                        1 => Expression::Subpath(SubpathExpr::arbitrary(g)),
+                        _ => panic!(),
+                    }
+                },
+                direction: SortDirection::arbitrary(g),
+            }
+        }
+    }
+
+    impl Arbitrary for WindowFrame {
+        fn arbitrary(g: &mut Gen) -> Self {
+            // Bounds must be ordered, so generate a pair and repair it rather than
+            // rejecting; parse_window_frame would refuse an inverted pair.
+            let (start, end) = arbitrary_ordered_frame_bounds(g);
+            Self {
+                units: WindowFrameUnits::arbitrary(g),
+                start,
+                end,
+            }
+        }
+    }
+
+    impl Arbitrary for WindowFrameUnits {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let rng = &(0..Self::VARIANT_COUNT).collect::<Vec<_>>();
+            match g.choose(rng).unwrap() {
+                0 => Self::Rows,
+                1 => Self::Range,
+                _ => panic!("missing WindowFrameUnits variant(s)"),
+            }
+        }
+    }
+
+    /// Frame bounds ordered from earliest to latest, expressed as a rank so that any two
+    /// draws can be sorted into a frame `parse_window_frame` will accept.
+    fn arbitrary_ordered_frame_bounds(g: &mut Gen) -> (WindowFrameBound, WindowFrameBound) {
+        fn bound(g: &mut Gen) -> (i64, WindowFrameBound) {
+            let rng = &(0..WindowFrameBound::VARIANT_COUNT).collect::<Vec<_>>();
+            match g.choose(rng).unwrap() {
+                0 => (i64::MIN, WindowFrameBound::UnboundedPreceding),
+                1 => (i64::MAX, WindowFrameBound::UnboundedFollowing),
+                2 => (0, WindowFrameBound::CurrentRow),
+                3 => {
+                    let n = rand_len(0, 100) as u32;
+                    (-(n as i64) - 1, WindowFrameBound::Preceding(n))
+                }
+                4 => {
+                    let n = rand_len(0, 100) as u32;
+                    (n as i64 + 1, WindowFrameBound::Following(n))
+                }
+                _ => panic!("missing WindowFrameBound variant(s)"),
+            }
+        }
+        let (a_rank, a) = bound(g);
+        let (b_rank, b) = bound(g);
+        let (start, end) = if a_rank <= b_rank { (a, b) } else { (b, a) };
+
+        // UNBOUNDED FOLLOWING can only end a frame and UNBOUNDED PRECEDING can only start
+        // one. Ordering by rank alone still allows a pair where both are the same
+        // unbounded value, so collapse those to a valid frame.
+        let start = match start {
+            WindowFrameBound::UnboundedFollowing => WindowFrameBound::CurrentRow,
+            other => other,
+        };
+        let end = match end {
+            WindowFrameBound::UnboundedPreceding => WindowFrameBound::CurrentRow,
+            other => other,
+        };
+        (start, end)
     }
 
     impl Arbitrary for SortSpec {

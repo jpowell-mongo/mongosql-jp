@@ -47,6 +47,9 @@ pub enum Error {
         cause: HigherOrderFunctionErrorCause,
         error: Box<Error>,
     },
+    DistinctWindowFunction(String),
+    InvalidWindowSortKey(mir::Expression),
+    WindowFunctionWithoutOver(String),
 }
 
 impl From<mir::schema::Error> for Error {
@@ -99,6 +102,9 @@ impl UserError for Error {
             Error::InvalidCast(_) => 3030,
             Error::InvalidSortKey(_) => 3034,
             Error::HigherOrderFunctionWrapper { .. } => 3035,
+            Error::DistinctWindowFunction(_) => 3036,
+            Error::InvalidWindowSortKey(_) => 3038,
+            Error::WindowFunctionWithoutOver(_) => 3037,
         }
     }
 
@@ -190,6 +196,15 @@ impl UserError for Error {
                     .unwrap_or_else(|| error.technical_message());
                 Some(format!("Invalid {cause_desc} argument for `{name}`: {cause_message} Sub-Error Code {}: {}", error.code(), sub_error_message))
             }
+            Error::DistinctWindowFunction(f) => Some(format!(
+                "DISTINCT is not supported in the window function `{f}`."
+            )),
+            Error::InvalidWindowSortKey(_) => Some(
+                "expressions are not allowed in a window's ORDER BY; use a field path".to_string(),
+            ),
+            Error::WindowFunctionWithoutOver(f) => Some(format!(
+                "`{f}` is a window function and requires an OVER clause, for example `{f} OVER (PARTITION BY ... ORDER BY ...)`."
+            )),
         }
     }
 
@@ -226,6 +241,12 @@ impl UserError for Error {
             Error::HigherOrderFunctionWrapper { name, cause, error } => {
                 format!("`{name}` with cause {cause:?}: sub-error: {}", error.technical_message())
             },
+            Error::DistinctWindowFunction(f) =>
+                format!("DISTINCT is not supported in a window function: {f}"),
+            Error::InvalidWindowSortKey(e) =>
+                format!("window ORDER BY key must be a pure field path, found {e:?}"),
+            Error::WindowFunctionWithoutOver(f) =>
+                format!("window function used without an OVER clause: {f}"),
         }
     }
 }

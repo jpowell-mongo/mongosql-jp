@@ -1,4 +1,8 @@
-use crate::air::{FieldRef, LiteralValue, Match, MqlOperator, SqlOperator, Stage, Variable};
+use crate::air::{
+    AggregationFunction, Error, Expression, FieldRef, LiteralValue, Match, MqlOperator, Result,
+    SetWindowFields, SetWindowFieldsOutputField, SortSpecification, SqlOperator, Stage, Variable,
+    WindowBounds, WindowFunction,
+};
 use std::fmt;
 
 impl Stage {
@@ -21,7 +25,7 @@ impl Stage {
             Stage::EquiJoin(j) => j.source.clone(),
             Stage::EquiLookup(l) => l.source.clone(),
             Stage::Sentinel => Box::new(self.clone()),
-            Stage::SetWindowFields(s) => s.source.clone()
+            Stage::SetWindowFields(s) => s.source.clone(),
         }
     }
 
@@ -46,6 +50,77 @@ impl Stage {
             Stage::SetWindowFields(s) => s.source = new_source,
             Stage::Sentinel => {}
         }
+    }
+}
+
+impl SetWindowFields {
+    /// Builds a `$setWindowFields` stage, validating the restrictions that the type
+    /// system cannot express on its own.
+    ///
+    /// The structural restrictions (documents XOR range, `unit` only on a range window,
+    /// no explicit window on rank operators or `$shift`) are already guaranteed by the
+    /// types. What remains are the rules that depend on `sortBy`:
+    ///
+    /// - Rank operators, `$shift`, `$first`/`$last`, and any explicitly bounded window
+    ///   all require a `sortBy`.
+    /// - A range or time-range window requires exactly one ascending `sortBy` key.
+    ///
+    /// Two further MongoDB restrictions are deliberately *not* checked here because they
+    /// depend on the runtime data rather than the plan: range windows require the `sortBy`
+    /// values to be numbers, and time-range windows require them to be dates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedWindowFunction`] for [`AggregationFunction::Count`],
+    /// which `$group` lowers to the SQL-semantic `$sqlCount` accumulator; whether that
+    /// works as a window operator is unconfirmed, so it is rejected for now.
+    /// Returns [`Error::MissingSortBy`] or [`Error::InvalidRangeSortBy`] when the
+    /// `sortBy` rules above are violated.
+    pub fn new(
+        source: Box<Stage>,
+        partition_by: Option<Expression>,
+        sort_by: Option<Vec<SortSpecification>>,
+        output_fields: Vec<SetWindowFieldsOutputField>,
+    ) -> Result<Self> {
+        for field in &output_fields {
+            let (requires_sort, requires_single_asc_sort) = match &field.window_function {
+                WindowFunction::Aggregation(agg) => {
+                    if agg.function == AggregationFunction::Count {
+                        return Err(Error::UnsupportedWindowFunction(agg.function));
+                    }
+                    let is_order_op = matches!(
+                        agg.function,
+                        AggregationFunction::First | AggregationFunction::Last
+                    );
+                    let needs_single_asc_sort = matches!(
+                        agg.window,
+                        Some(WindowBounds::Range(_)) | Some(WindowBounds::TimeRange(_))
+                    );
+                    (is_order_op || agg.window.is_some(), needs_single_asc_sort)
+                }
+                // $count needs no sort: it counts the whole partition and carries no window.
+                WindowFunction::Count => (false, false),
+                // Rank operators and $shift use an implicit window over the sorted partition.
+                WindowFunction::Rank(_) | WindowFunction::Shift(_) => (true, false),
+            };
+
+            if requires_sort && sort_by.is_none() {
+                return Err(Error::MissingSortBy(field.name.clone()));
+            }
+
+            if requires_single_asc_sort
+                && !matches!(sort_by.as_deref(), Some([SortSpecification::Asc(_)]))
+            {
+                return Err(Error::InvalidRangeSortBy);
+            }
+        }
+
+        Ok(Self {
+            source,
+            partition_by,
+            sort_by,
+            output_fields,
+        })
     }
 }
 

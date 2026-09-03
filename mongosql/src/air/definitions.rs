@@ -25,48 +25,108 @@ pub enum Stage {
     Sentinel
 }
 
-/// Begin: $setWindowField type definitions
-/// TODO review the restrictions here: https://www.mongodb.com/docs/manual/reference/operator/aggregation/setWindowFields/#restrictions
-/// Figure out if we can encode them into the type system itself, so we always construct valid SetWindowField expressions
-#[derive(PartialEq, Debug, Clone)]
+// Begin: $setWindowFields type definitions.
+//
+// These types aim to make invalid $setWindowFields stages unrepresentable. The
+// restrictions that ARE encoded structurally:
+//   - `documents` and `range` windows are mutually exclusive (WindowBounds variants)
+//   - a `unit` is only meaningful for a range window (TimeRange bundles them)
+//   - rank operators and $shift use an implicit window, so they cannot carry one
+//     (only WindowFunction::Aggregation has a `window` field)
+// The restrictions that depend on `sortBy` are enforced by SetWindowFields::new.
+// See https://www.mongodb.com/docs/manual/reference/operator/aggregation/setWindowFields/#restrictions
+
+/// A single boundary of a window frame.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum WindowBoundary {
-        Unbounded,
-        CurrentRow,
-        NumericBoundary(i64),
+    Unbounded,
+    Current,
+    /// Offset relative to the current document (documents windows) or to the
+    /// current `sortBy` value (range windows). Negative is before, positive after.
+    Position(i64),
 }
 
-    #[derive(PartialEq, Debug, Clone)]
-
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub struct WindowRange {
-        pub lower_bound: WindowBoundary,
-        pub upper_bound: WindowBoundary
+    pub lower: WindowBoundary,
+    pub upper: WindowBoundary,
 }
 
-type WindowUnit = DatePart;
+/// A time-based range window. A `unit` is only meaningful for a range window, so
+/// it is bundled with the bounds rather than being a free-floating `Option`.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub struct TimeRange {
+    pub bounds: WindowRange,
+    pub unit: DatePart,
+}
 
+/// `documents` and `range` are mutually exclusive in MQL, so they are variants
+/// rather than two `Option` fields.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum WindowBounds {
+    Documents(WindowRange),
+    Range(WindowRange),
+    TimeRange(TimeRange),
+}
+
+/// The operator applied to a single output field of a `$setWindowFields` stage.
+///
+/// Only aggregation accumulators may carry an explicit `window`. Rank operators and
+/// `$shift` use an implicit window and MongoDB errors if one is supplied, so those
+/// variants structurally cannot hold one.
 #[derive(PartialEq, Debug, Clone)]
-pub struct WindowExpr {
-    documents: Option<WindowRange>,
-    range: Option<WindowRange>,
-    unit: Option<WindowUnit>
+pub enum WindowFunction {
+    Aggregation(AggregationWindowFunction),
+    /// `$count`, which takes an empty document like the rank operators rather than an
+    /// argument like an accumulator. Unrelated to the `$sqlCount` accumulator that `$group`
+    /// lowers SQL `COUNT` to, and unlike SQL `COUNT(x)` it counts every document in the
+    /// window rather than skipping nulls.
+    Count,
+    Rank(RankWindowFunction),
+    Shift(Shift),
+}
+
+/// An aggregation accumulator applied as a window operator, e.g. `{"$sum": "$quantity"}`.
+#[derive(PartialEq, Debug, Clone)]
+pub struct AggregationWindowFunction {
+    pub function: AggregationFunction,
+    pub expression: Box<Expression>,
+    /// `None` means an unbounded window covering the whole partition.
+    pub window: Option<WindowBounds>,
+}
+
+/// Rank operators. Each takes an empty document as its argument and requires a `sortBy`.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum RankWindowFunction {
+    Rank,
+    DenseRank,
+    DocumentNumber,
+}
+
+/// `$shift`, the target for SQL `LAG`/`LEAD`. Requires a `sortBy`.
+#[derive(PartialEq, Debug, Clone)]
+pub struct Shift {
+    pub output: Box<Expression>,
+    /// Negative shifts backwards (`LAG`), positive forwards (`LEAD`).
+    pub by: i32,
+    pub default: Option<Box<Expression>>,
 }
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct SetWindowFieldsOutputField {
-        pub name: String,
-        pub window_operator: MqlSemanticOperator,
-        pub window: WindowExpr
-    }
+    pub name: String,
+    pub window_function: WindowFunction,
+}
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct SetWindowFields {
-        pub source: Box<Stage>,
-        pub partition_by: Option<Expression>,
-        pub sort_by: Option<Vec<SortSpecification>>,
-        pub output_fields: Vec<SetWindowFieldsOutputField>
+    pub source: Box<Stage>,
+    pub partition_by: Option<Expression>,
+    pub sort_by: Option<Vec<SortSpecification>>,
+    pub output_fields: Vec<SetWindowFieldsOutputField>,
 }
 
-/// End: $setWindowField type definitions
+// End: $setWindowFields type definitions
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Project {
@@ -715,6 +775,25 @@ pub enum DatePart {
     Minute,
     Second,
     Millisecond,
+}
+
+impl DatePart {
+    /// Returns the MQL name for this date part, as used by the `unit` field of
+    /// `$dateAdd`/`$dateDiff`/`$dateTrunc` and of a `$setWindowFields` range window.
+    pub fn to_str(self) -> &'static str {
+        use DatePart::*;
+        match self {
+            Year => "year",
+            Quarter => "quarter",
+            Month => "month",
+            Week => "week",
+            Day => "day",
+            Hour => "hour",
+            Minute => "minute",
+            Second => "second",
+            Millisecond => "millisecond",
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]

@@ -1634,3 +1634,82 @@ mod higher_order_functions {
         input = "SELECT ARRAY_JOIN(a, b, c)",
     );
 }
+
+mod window_functions {
+    use super::*;
+    use crate::ast::rewrites::{Error, WindowFunctionsRewritePass};
+
+    // SELECT is the only clause where a window function is allowed.
+    test_rewrite!(
+        allowed_in_select,
+        pass = WindowFunctionsRewritePass,
+        expected = Ok("SELECT SUM(a) OVER (PARTITION BY b) AS s FROM foo"),
+        input = "SELECT SUM(a) OVER (PARTITION BY b) AS s FROM foo",
+    );
+
+    test_rewrite!(
+        not_allowed_in_where,
+        pass = WindowFunctionsRewritePass,
+        expected = Err(Error::WindowFunctionNotAllowedInClause("WHERE")),
+        input = "SELECT a AS a FROM foo WHERE SUM(b) OVER () > 1",
+    );
+
+    test_rewrite!(
+        not_allowed_in_group_by,
+        pass = WindowFunctionsRewritePass,
+        expected = Err(Error::WindowFunctionNotAllowedInClause("GROUP BY")),
+        input = "SELECT a AS a FROM foo GROUP BY SUM(b) OVER () AS g",
+    );
+
+    test_rewrite!(
+        not_allowed_in_having,
+        pass = WindowFunctionsRewritePass,
+        expected = Err(Error::WindowFunctionNotAllowedInClause("HAVING")),
+        input = "SELECT a AS a FROM foo GROUP BY a AS a HAVING SUM(b) OVER () > 1",
+    );
+
+    // A subquery gets its own clause context, so a window function in the subquery's
+    // SELECT is fine even though the subquery itself sits in a WHERE. Note this uses a
+    // standard SELECT: a SELECT VALUE body rejects window functions outright.
+    test_rewrite!(
+        subquery_in_where_has_its_own_clause_context,
+        pass = WindowFunctionsRewritePass,
+        expected = Ok("SELECT a AS a FROM foo WHERE (SELECT SUM(b) OVER () AS s FROM bar)"),
+        input = "SELECT a AS a FROM foo WHERE (SELECT SUM(b) OVER () AS s FROM bar)",
+    );
+
+    test_rewrite!(
+        not_allowed_in_select_values,
+        pass = WindowFunctionsRewritePass,
+        expected = Err(Error::WindowFunctionInSelectValues),
+        input = "SELECT VALUE {'s': SUM(a) OVER ()} FROM foo",
+    );
+
+    // A RANGE frame measures offsets against the sort key's value, so it needs a sort.
+    test_rewrite!(
+        range_frame_requires_order_by,
+        pass = WindowFunctionsRewritePass,
+        expected = Err(Error::RangeWindowRequiresOrderBy),
+        input =
+            "SELECT SUM(a) OVER (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
+    );
+
+    test_rewrite!(
+        range_frame_with_order_by_is_allowed,
+        pass = WindowFunctionsRewritePass,
+        expected =
+            Ok("SELECT SUM(a) OVER (ORDER BY b ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo"),
+        input = "SELECT SUM(a) OVER (ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
+    );
+
+    // A ROWS frame counts documents, so it is meaningful without a sort.
+    test_rewrite!(
+        rows_frame_without_order_by_is_allowed,
+        pass = WindowFunctionsRewritePass,
+        expected = Ok(
+            "SELECT SUM(a) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo"
+        ),
+        input =
+            "SELECT SUM(a) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM foo",
+    );
+}

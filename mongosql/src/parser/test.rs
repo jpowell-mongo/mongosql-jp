@@ -3662,3 +3662,316 @@ mod unrecognized_token_suggestion {
         input = "notavalidquery"
     );
 }
+
+mod window_functions {
+    use crate::ast::*;
+
+    fn ident(s: &str) -> Expression {
+        Expression::Identifier(s.to_string())
+    }
+
+    fn call(function: FunctionName, args: Vec<Expression>) -> FunctionExpr {
+        FunctionExpr {
+            function,
+            args: FunctionArguments::Args(args),
+            set_quantifier: None,
+        }
+    }
+
+    fn window(function: FunctionExpr, over: WindowSpec) -> Expression {
+        Expression::Window(WindowFunctionExpr { function, over })
+    }
+
+    fn spec(
+        partition_by: Vec<Expression>,
+        order_by: Vec<WindowSortSpec>,
+        frame: Option<WindowFrame>,
+    ) -> WindowSpec {
+        WindowSpec {
+            partition_by,
+            order_by,
+            frame,
+        }
+    }
+
+    fn sort(key: &str, direction: SortDirection) -> WindowSortSpec {
+        WindowSortSpec {
+            key: ident(key),
+            direction,
+        }
+    }
+
+    mod ast {
+        use super::*;
+
+        validate_ast!(
+            empty_over_clause,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Sum, vec![ident("a")]),
+                spec(vec![], vec![], None)
+            ),
+            input = "SUM(a) OVER ()",
+        );
+
+        validate_ast!(
+            partition_by_only,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Sum, vec![ident("a")]),
+                spec(vec![ident("b")], vec![], None)
+            ),
+            input = "SUM(a) OVER (PARTITION BY b)",
+        );
+
+        validate_ast!(
+            multiple_partition_keys_and_sort_direction,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Sum, vec![ident("a")]),
+                spec(
+                    vec![ident("b"), ident("c")],
+                    vec![sort("d", SortDirection::Desc)],
+                    None
+                )
+            ),
+            input = "SUM(a) OVER (PARTITION BY b, c ORDER BY d DESC)",
+        );
+
+        // An omitted sort direction defaults to ASC, as it does for a top-level ORDER BY.
+        validate_ast!(
+            sort_direction_defaults_to_asc,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Sum, vec![ident("a")]),
+                spec(vec![], vec![sort("d", SortDirection::Asc)], None)
+            ),
+            input = "SUM(a) OVER (ORDER BY d)",
+        );
+
+        validate_ast!(
+            rows_frame_with_offsets,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Sum, vec![ident("a")]),
+                spec(
+                    vec![],
+                    vec![],
+                    Some(WindowFrame {
+                        units: WindowFrameUnits::Rows,
+                        start: WindowFrameBound::Preceding(2),
+                        end: WindowFrameBound::Following(1),
+                    })
+                )
+            ),
+            input = "SUM(a) OVER (ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING)",
+        );
+
+        validate_ast!(
+            range_frame_with_unbounded_and_current_row,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Sum, vec![ident("a")]),
+                spec(
+                    vec![],
+                    vec![sort("d", SortDirection::Asc)],
+                    Some(WindowFrame {
+                        units: WindowFrameUnits::Range,
+                        start: WindowFrameBound::UnboundedPreceding,
+                        end: WindowFrameBound::CurrentRow,
+                    })
+                )
+            ),
+            input = "SUM(a) OVER (ORDER BY d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        );
+
+        validate_ast!(
+            rank_takes_no_arguments,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::Rank, vec![]),
+                spec(vec![], vec![sort("a", SortDirection::Asc)], None)
+            ),
+            input = "RANK() OVER (ORDER BY a)",
+        );
+
+        validate_ast!(
+            row_number,
+            method = parse_expression,
+            expected = window(
+                call(FunctionName::RowNumber, vec![]),
+                spec(vec![], vec![sort("a", SortDirection::Asc)], None)
+            ),
+            input = "ROW_NUMBER() OVER (ORDER BY a)",
+        );
+
+        // COUNT(*) needs no new AST: FunctionArguments::Star already covers it.
+        validate_ast!(
+            count_star,
+            method = parse_expression,
+            expected = window(
+                FunctionExpr {
+                    function: FunctionName::Count,
+                    args: FunctionArguments::Star,
+                    set_quantifier: None,
+                },
+                spec(vec![], vec![], None)
+            ),
+            input = "COUNT(*) OVER ()",
+        );
+
+        validate_ast!(
+            lag_with_offset,
+            method = parse_expression,
+            expected = window(
+                call(
+                    FunctionName::Lag,
+                    vec![ident("a"), Expression::Literal(Literal::Integer(1))]
+                ),
+                spec(vec![], vec![sort("b", SortDirection::Asc)], None)
+            ),
+            input = "LAG(a, 1) OVER (ORDER BY b)",
+        );
+
+        // A window call is a Bottom-tier expression, so it composes with the operator
+        // precedence chain like any other function call.
+        validate_ast!(
+            composes_with_binary_operators,
+            method = parse_expression,
+            expected = Expression::Binary(BinaryExpr {
+                left: Box::new(window(
+                    call(FunctionName::Sum, vec![ident("a")]),
+                    spec(vec![], vec![], None)
+                )),
+                op: BinaryOp::Add,
+                right: Box::new(Expression::Literal(Literal::Integer(1))),
+            }),
+            input = "SUM(a) OVER () + 1",
+        );
+
+        validate_ast!(
+            subpath_applies_to_the_window_result,
+            method = parse_expression,
+            expected = Expression::Subpath(SubpathExpr {
+                expr: Box::new(window(
+                    call(FunctionName::Max, vec![ident("a")]),
+                    spec(vec![], vec![], None)
+                )),
+                subpath: "b".to_string(),
+            }),
+            input = "MAX(a) OVER ().b",
+        );
+    }
+
+    mod invalid {
+        // BETWEEN is mandatory: MySQL's single-bound shorthand would require a bare ROWS
+        // keyword, which would reserve `rows` as an identifier.
+        parsable!(
+            frame_shorthand_without_between,
+            expected = false,
+            input = "SELECT SUM(a) OVER (ROWS UNBOUNDED PRECEDING) AS s FROM foo"
+        );
+
+        // Positional sort keys are meaningless inside a window.
+        parsable!(
+            positional_sort_key,
+            expected = false,
+            input = "SELECT SUM(a) OVER (ORDER BY 1) AS s FROM foo"
+        );
+
+        parsable!(
+            offset_without_between,
+            expected = false,
+            input = "SELECT SUM(a) OVER (ROWS 2 PRECEDING) AS s FROM foo"
+        );
+
+        parsable!(
+            negative_offset,
+            expected = false,
+            input = "SELECT SUM(a) OVER (ROWS BETWEEN -1 PRECEDING AND CURRENT ROW) AS s FROM foo"
+        );
+
+        parsable!(
+            frame_start_after_frame_end,
+            expected = false,
+            input = "SELECT SUM(a) OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING) AS s FROM foo"
+        );
+
+        parsable!(
+            unbounded_following_cannot_start_a_frame,
+            expected = false,
+            input = "SELECT SUM(a) OVER (ROWS BETWEEN UNBOUNDED FOLLOWING AND UNBOUNDED FOLLOWING) AS s FROM foo"
+        );
+
+        // Named windows are not supported, so OVER must be followed by a parenthesized spec.
+        // Window functions are not supported in ORDER BY. They cannot reach the rewrite
+        // pass anyway: parse_sort_key restricts top-level sort keys to field paths.
+        parsable!(
+            top_level_order_by_sort_key,
+            expected = false,
+            input = "SELECT a AS a FROM foo ORDER BY SUM(b) OVER ()"
+        );
+
+        parsable!(
+            named_window_reference,
+            expected = false,
+            input = "SELECT SUM(a) OVER w AS s FROM foo"
+        );
+
+        parsable!(
+            window_clause_definition,
+            expected = false,
+            input = "SELECT SUM(a) OVER w AS s FROM foo WINDOW w AS (PARTITION BY b)"
+        );
+    }
+
+    // The window keywords are lexed as fused multi-word tokens so that ROWS, RANGE,
+    // CURRENT, UNBOUNDED and PARTITION survive as bare identifiers. OVER, PRECEDING and
+    // FOLLOWING are fully reserved.
+    mod keyword_compatibility {
+        parsable!(
+            rows_is_still_an_identifier,
+            expected = true,
+            input = "SELECT rows FROM foo"
+        );
+
+        parsable!(
+            other_window_words_are_still_identifiers,
+            expected = true,
+            input = "SELECT range, current, unbounded, partition FROM foo"
+        );
+
+        // CURRENT_ROW has an underscore, so it does not match the `current\s+row` token.
+        parsable!(
+            underscored_current_row_is_an_identifier,
+            expected = true,
+            input = "SELECT current_row FROM foo"
+        );
+
+        parsable!(
+            reserved_words_need_delimiters,
+            expected = true,
+            input = "SELECT `over`, `preceding`, `following` FROM foo"
+        );
+
+        // Longest-match lexing means the fused token wins wherever the two words are
+        // adjacent. These queries used to parse and deliberately no longer do.
+        parsable!(
+            rows_before_between_is_now_a_fused_token,
+            expected = false,
+            input = "SELECT a FROM foo WHERE rows BETWEEN 1 AND 2"
+        );
+
+        parsable!(
+            current_before_row_is_now_a_fused_token,
+            expected = false,
+            input = "SELECT current row FROM foo"
+        );
+
+        parsable!(
+            over_is_reserved,
+            expected = false,
+            input = "SELECT over FROM foo"
+        );
+    }
+}

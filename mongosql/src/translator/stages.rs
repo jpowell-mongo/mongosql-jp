@@ -27,6 +27,7 @@ impl MqlTranslator {
             mir::Stage::Set(s) => self.translate_set(s),
             mir::Stage::Derived(d) => self.translate_derived(d),
             mir::Stage::Unwind(u) => self.translate_unwind(u),
+            mir::Stage::Window(w) => self.translate_window(w),
             mir::Stage::MqlIntrinsic(i) => self.translate_mql_intrinsic(i),
             mir::Stage::Sentinel => unreachable!(),
         }
@@ -190,6 +191,135 @@ impl MqlTranslator {
             })),
             specifications,
         }))
+    }
+
+    /// Translates a Window stage into a single `$setWindowFields`.
+    ///
+    /// Unlike `translate_group`, this does NOT reset the mapping registry and needs no
+    /// trailing `$project`. `$setWindowFields` output field names accept dotted paths with
+    /// `$addFields` semantics, so the outputs are written straight to their final location
+    /// under the Bottom datasource and every incoming binding survives untouched.
+    fn translate_window(&mut self, mir_window: mir::Window) -> Result<air::Stage> {
+        let source_translation = self.translate_stage(*mir_window.source)?;
+
+        // A single partition key is used directly; several become a document, the way
+        // $group builds a compound _id. Empty means one partition over the whole input.
+        let partition_by = match mir_window.partition_by.len() {
+            0 => None,
+            1 => Some(self.translate_expression(
+                mir_window.partition_by.into_iter().next().unwrap(),
+            )?),
+            _ => {
+                let mut doc = UniqueLinkedHashMap::new();
+                for (i, e) in mir_window.partition_by.into_iter().enumerate() {
+                    doc.insert(format!("_partition{i}"), self.translate_expression(e)?)?;
+                }
+                Some(air::Expression::Document(doc))
+            }
+        };
+
+        let sort_by = if mir_window.sort_by.is_empty() {
+            None
+        } else {
+            Some(
+                mir_window
+                    .sort_by
+                    .into_iter()
+                    .map(|spec| {
+                        Ok(match spec {
+                            mir::SortSpecification::Asc(fp) => {
+                                air::SortSpecification::Asc(self.get_field_path_name(fp)?)
+                            }
+                            mir::SortSpecification::Desc(fp) => {
+                                air::SortSpecification::Desc(self.get_field_path_name(fp)?)
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )
+        };
+
+        // Reuse the existing Bottom mapping when the source already has one, so that a
+        // Window over a Group writes into the same document. Otherwise mint a unique name
+        // rather than hardcoding "__bot", which is what keeps an inner subquery's outputs
+        // from colliding with an outer scope's.
+        let bot_key = Key::bot(self.scope_level);
+        let bot_name = match self.mapping_registry.get(&bot_key) {
+            Some(v) => v.name.clone(),
+            None => {
+                let name = Self::generate_unique_datasource_name("__bot".to_string(), |s| {
+                    self.mapping_registry.contains_mapping(self.scope_level, s)
+                });
+                self.mapping_registry.insert(
+                    bot_key,
+                    MqlMappingRegistryValue::new(name.clone(), MqlReferenceType::FieldRef),
+                );
+                name
+            }
+        };
+
+        let output_fields = mir_window
+            .functions
+            .into_iter()
+            .map(|f| {
+                Ok(air::SetWindowFieldsOutputField {
+                    name: format!("{bot_name}.{}", f.alias),
+                    window_function: self.translate_window_expr(f.window_expr)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(air::Stage::SetWindowFields(air::SetWindowFields::new(
+            Box::new(source_translation),
+            partition_by,
+            sort_by,
+            output_fields,
+        )?))
+    }
+
+    fn translate_window_expr(&mut self, expr: mir::WindowExpr) -> Result<air::WindowFunction> {
+        Ok(match expr {
+            mir::WindowExpr::Aggregation(a) => {
+                air::WindowFunction::Aggregation(air::AggregationWindowFunction {
+                    function: Self::translate_agg_function(a.function),
+                    expression: Box::new(self.translate_expression(*a.arg)?),
+                    window: a.frame.map(Self::translate_window_frame),
+                })
+            }
+            mir::WindowExpr::CountStar => air::WindowFunction::Count,
+            mir::WindowExpr::Rank(r) => air::WindowFunction::Rank(match r {
+                mir::RankFunction::Rank => air::RankWindowFunction::Rank,
+                mir::RankFunction::DenseRank => air::RankWindowFunction::DenseRank,
+                mir::RankFunction::RowNumber => air::RankWindowFunction::DocumentNumber,
+            }),
+            mir::WindowExpr::Shift(sh) => air::WindowFunction::Shift(air::Shift {
+                output: Box::new(self.translate_expression(*sh.output)?),
+                by: sh.by,
+                default: sh
+                    .default
+                    .map(|d| self.translate_expression(*d).map(Box::new))
+                    .transpose()?,
+            }),
+        })
+    }
+
+    fn translate_window_frame(frame: mir::WindowFrame) -> air::WindowBounds {
+        let range = air::WindowRange {
+            lower: Self::translate_window_boundary(frame.bounds.lower),
+            upper: Self::translate_window_boundary(frame.bounds.upper),
+        };
+        match frame.units {
+            mir::WindowFrameUnits::Documents => air::WindowBounds::Documents(range),
+            mir::WindowFrameUnits::Range => air::WindowBounds::Range(range),
+        }
+    }
+
+    fn translate_window_boundary(b: mir::WindowBoundary) -> air::WindowBoundary {
+        match b {
+            mir::WindowBoundary::Unbounded => air::WindowBoundary::Unbounded,
+            mir::WindowBoundary::Current => air::WindowBoundary::Current,
+            mir::WindowBoundary::Position(n) => air::WindowBoundary::Position(n),
+        }
     }
 
     fn translate_limit(&mut self, mir_limit: mir::Limit) -> Result<air::Stage> {

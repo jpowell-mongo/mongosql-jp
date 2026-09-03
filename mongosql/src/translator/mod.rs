@@ -30,6 +30,10 @@ pub enum Error {
     ReferenceNotFound(Key),
     #[error("duplicate key found: {0}")]
     DuplicateKey(#[from] DuplicateKeyError),
+    // The last checkpoint before codegen: catches a bad lowering, such as a rank operator
+    // emitted without a sortBy, as a clean error rather than an invalid pipeline.
+    #[error("invalid $setWindowFields stage: {0}")]
+    InvalidSetWindowFields(#[from] crate::air::Error),
     #[error("project fields may not be empty")]
     InvalidProjectField,
     #[error("invalid group key, unaliased key must be field ref")]

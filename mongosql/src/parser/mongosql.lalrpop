@@ -298,6 +298,55 @@ FunctionExpr: FunctionExpr = {
     Substring,
 }
 
+// A window function is a postfix on a function call, so it lives in `BottomExpr` rather
+// than in the tier chain. This is not ambiguous with the bare `FunctionExpr` alternative:
+// OVER appears in exactly one position in this grammar and is never in FOLLOW(BottomExpr),
+// so the shift/reduce decision is settled by one token of lookahead.
+WindowFunctionExpr: WindowFunctionExpr = {
+    <f:FunctionExpr> OVER LEFT_PAREN <w:WindowSpec> RIGHT_PAREN =>
+        WindowFunctionExpr{function: f, over: w},
+}
+
+// Every clause is optional, so `OVER ()` parses. Their FIRST sets are disjoint and the
+// whole sequence is followed by RIGHT_PAREN, so each empty reduction is decidable.
+WindowSpec: WindowSpec = {
+    <p:(PARTITION_BY <CommaPlus<Expression>>)?>
+    <o:(ORDER BY <CommaPlus<WindowSortSpec>>)?>
+    <f:WindowFrameClause?> => WindowSpec{
+        partition_by: p.unwrap_or_default(),
+        order_by: o.unwrap_or_default(),
+        frame: f,
+    },
+}
+
+// Uses Tier14Expr rather than Expression, mirroring SortKey: it is the smallest tier that
+// derives `a` and `a.b.c` while structurally excluding binary/unary/IS/LIKE/BETWEEN forms.
+// Tier14Expr still derives an integer literal, so parse_window_sort_spec is what actually
+// rejects `ORDER BY 1` inside a window.
+WindowSortSpec: WindowSortSpec = {
+    <k:Tier14Expr> <d:SortDirection?> =>? parse_window_sort_spec(*k, d),
+}
+
+// BETWEEN is mandatory. MySQL's single-bound shorthand (`ROWS UNBOUNDED PRECEDING`) would
+// require a bare ROWS terminal, which would reserve `rows` as an identifier.
+WindowFrameClause: WindowFrame = {
+    ROWS_BETWEEN <s:WindowFrameBound> AND <e:WindowFrameBound> =>?
+        parse_window_frame(WindowFrameUnits::Rows, s, e),
+    RANGE_BETWEEN <s:WindowFrameBound> AND <e:WindowFrameBound> =>?
+        parse_window_frame(WindowFrameUnits::Range, s, e),
+}
+
+// Offsets are Unsigned32, not Expression. That is what keeps the AND above distinct from
+// the boolean AND operator; widening this to an expression reintroduces the BETWEEN/AND
+// ambiguity and will break the build with an LR(1) conflict.
+WindowFrameBound: WindowFrameBound = {
+    UNBOUNDED_PRECEDING => WindowFrameBound::UnboundedPreceding,
+    UNBOUNDED_FOLLOWING => WindowFrameBound::UnboundedFollowing,
+    CURRENT_ROW => WindowFrameBound::CurrentRow,
+    <n:Unsigned32> PRECEDING => WindowFrameBound::Preceding(n),
+    <n:Unsigned32> FOLLOWING => WindowFrameBound::Following(n),
+}
+
 CastExpr: CastExpr = {
     CAST LEFT_PAREN <ex:Expression> AS <t:Type> RIGHT_PAREN =>
         CastExpr {expr: Box::new(ex), to: t, on_null: None, on_error: None},
@@ -569,6 +618,7 @@ BottomExpr: Box<Expression> = {
   Trim => Box::new(Expression::Trim(<>)),
   Extract => Box::new(Expression::Extract(<>)),
   FunctionExpr => Box::new(Expression::Function(<>)),
+  WindowFunctionExpr => Box::new(Expression::Window(<>)),
   Identifier => Box::new(Expression::Identifier(<>)),
   Literal => Box::new(Expression::Literal(<>)),
   StringConstructor => Box::new(Expression::StringConstructor(<>)),
@@ -839,6 +889,7 @@ match {
   r"(?i)character" => CHARACTER,
   r"(?i)char varying" => CHAR_VARYING,
   r"(?i)character varying" => CHARACTER_VARYING,
+  r"(?i)current\s+row" => CURRENT_ROW,
   r"(?i)cross" => CROSS,
   r"(?i)current_timestamp" => CURRENT_TIMESTAMP,
   r"(?i)date" => DATE,
@@ -859,6 +910,7 @@ match {
   r"(?i)false" => FALSE,
   r"(?i)fetch\s+(first|next)" => FETCH_FIRST,
   r"(?i)flatten" => FLATTEN,
+  r"(?i)following" => FOLLOWING,
   r"(?i)float" => FLOAT,
   r"(?i)for" => FOR,
   r"(?i)from" => FROM,
@@ -893,13 +945,18 @@ match {
   r"(?i)on" => ON,
   r"(?i)or" => OR,
   r"(?i)order" => ORDER,
+  r"(?i)over" => OVER,
   r"(?i)outer" => OUTER,
+  r"(?i)partition\s+by" => PARTITION_BY,
   r"(?i)paths?" => PATH,
   r"(?i)position" => POSITION,
+  r"(?i)preceding" => PRECEDING,
   r"(?i)precision" => PRECISION,
+  r"(?i)range\s+between" => RANGE_BETWEEN,
   r"(?i)real" => REAL,
   r"(?i)regex" => REGEX,
   r"(?i)right" => RIGHT,
+  r"(?i)rows?\s+between" => ROWS_BETWEEN,
   r"(?i)rows?\s+only" => ROWS_ONLY,
   r"(?i)separator" => SEPARATOR,
   r"(?i)smallint" => SMALLINT,
@@ -914,6 +971,8 @@ match {
   r"(?i)trim" => TRIM,
   r"(?i)true" => TRUE,
   r"(?i)undefined" => UNDEFINED,
+  r"(?i)unbounded\s+following" => UNBOUNDED_FOLLOWING,
+  r"(?i)unbounded\s+preceding" => UNBOUNDED_PRECEDING,
   r"(?i)union" => UNION,
   r"(?i)unwind" => UNWIND,
   r"(?i)values?" => VALUE,

@@ -27,6 +27,7 @@ pub enum Stage {
     Set(Set),
     Derived(Derived),
     Unwind(Unwind),
+    Window(Window),
     MqlIntrinsic(MqlStage),
     // We need this to handle source swapping. It is not a real stage.
     // We could change source to be Option<Box<Stage>> for all nodes,
@@ -236,6 +237,97 @@ pub enum SortSpecification {
     Asc(FieldPath),
     Desc(FieldPath),
 }
+
+// Begin: window function type definitions.
+//
+// A `Window` stage lowers to `$setWindowFields`. Unlike `Group`, it is ADDITIVE: it
+// preserves every incoming binding and appends one field per window function. MQL allows
+// only one partitionBy/sortBy per stage but a per-output-field window, so window functions
+// sharing a specification share a stage and differing specifications produce a chain.
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Window {
+    pub source: Box<Stage>,
+    /// Empty means a single partition covering the whole input.
+    pub partition_by: Vec<Expression>,
+    /// Empty means no sort. Reuses `SortSpecification` so the translator's
+    /// `get_field_path_name` path applies unchanged.
+    pub sort_by: Vec<SortSpecification>,
+    pub functions: Vec<AliasedWindowFunction>,
+    pub cache: SchemaCache<ResultSet>,
+    pub scope: u16,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct AliasedWindowFunction {
+    pub alias: String,
+    pub window_expr: WindowExpr,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum WindowExpr {
+    Aggregation(WindowAggregation),
+    /// `COUNT(*)`, which lowers to the MQL `$count` window operator rather than to an
+    /// accumulator. `COUNT(x)` is not this: SQL skips nulls where `$count` does not, so it
+    /// lowers to an `Aggregation` over a null-guard instead.
+    CountStar,
+    Rank(RankFunction),
+    Shift(Shift),
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct WindowAggregation {
+    pub function: AggregationFunction,
+    pub arg: Box<Expression>,
+    /// `None` is an unbounded window over the whole partition.
+    pub frame: Option<WindowFrame>,
+}
+
+/// Rank operators. Each requires a sort and uses an implicit window, so none carries a frame.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum RankFunction {
+    Rank,
+    DenseRank,
+    RowNumber,
+}
+
+/// The target for SQL `LAG`/`LEAD`. Requires a sort.
+#[derive(PartialEq, Debug, Clone)]
+pub struct Shift {
+    pub output: Box<Expression>,
+    /// Negative shifts backwards (`LAG`), positive forwards (`LEAD`).
+    pub by: i32,
+    pub default: Option<Box<Expression>>,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub struct WindowFrame {
+    pub units: WindowFrameUnits,
+    pub bounds: WindowRange,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum WindowFrameUnits {
+    Documents,
+    Range,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub struct WindowRange {
+    pub lower: WindowBoundary,
+    pub upper: WindowBoundary,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum WindowBoundary {
+    Unbounded,
+    Current,
+    /// Offset relative to the current document (documents frames) or to the current sort
+    /// value (range frames). Negative is before, positive after.
+    Position(i64),
+}
+
+// End: window function type definitions.
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum JoinType {

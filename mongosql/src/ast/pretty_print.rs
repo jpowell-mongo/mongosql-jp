@@ -27,6 +27,7 @@ lazy_static! {
         r"(?i)character$",
         r"(?i)char\s+varying$",
         r"(?i)character\s+varying$",
+        r"(?i)current\s+row$",
         r"(?i)cross$",
         r"(?i)current_timestamp$",
         r"(?i)dbpointer$",
@@ -47,6 +48,7 @@ lazy_static! {
         r"(?i)fetch\s+first$",
         r"(?i)fetch\s+last$",
         r"(?i)flatten$",
+        r"(?i)following$",
         r"(?i)float$",
         r"(?i)for$",
         r"(?i)from$",
@@ -82,13 +84,18 @@ lazy_static! {
         r"(?i)on$",
         r"(?i)or$",
         r"(?i)order$",
+        r"(?i)over$",
         r"(?i)outer$",
+        r"(?i)partition\s+by$",
         r"(?i)paths?$",
         r"(?i)position$",
+        r"(?i)preceding$",
         r"(?i)precision$",
+        r"(?i)range\s+between$",
         r"(?i)real$",
         r"(?i)regex$",
         r"(?i)right$",
+        r"(?i)rows?\s+between$",
         r"(?i)rows?\s+only$",
         r"(?i)separator$",
         r"(?i)smallint$",
@@ -102,6 +109,8 @@ lazy_static! {
         r"(?i)trim$",
         r"(?i)true$",
         r"(?i)undefined$",
+        r"(?i)unbounded\s+following$",
+        r"(?i)unbounded\s+preceding$",
         r"(?i)union$",
         r"(?i)unwind$",
         r"(?i)value$",
@@ -626,6 +635,91 @@ impl PrettyPrint for SortDirection {
     }
 }
 
+impl PrettyPrint for WindowFunctionExpr {
+    fn pretty_print(&self) -> Result<String> {
+        Ok(format!(
+            "{} OVER ({})",
+            self.function.pretty_print()?,
+            self.over.pretty_print()?
+        ))
+    }
+}
+
+impl PrettyPrint for WindowSpec {
+    fn pretty_print(&self) -> Result<String> {
+        // Each clause is omitted when absent, so `OVER ()` prints as written and an
+        // unwritten frame stays unwritten. This is what keeps the round trip exact.
+        let mut parts = Vec::new();
+        if !self.partition_by.is_empty() {
+            parts.push(format!(
+                "PARTITION BY {}",
+                self.partition_by
+                    .iter()
+                    .map(|e| e.pretty_print())
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ")
+            ));
+        }
+        if !self.order_by.is_empty() {
+            parts.push(format!(
+                "ORDER BY {}",
+                self.order_by
+                    .iter()
+                    .map(|s| s.pretty_print())
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ")
+            ));
+        }
+        if let Some(frame) = &self.frame {
+            parts.push(frame.pretty_print()?);
+        }
+        Ok(parts.join(" "))
+    }
+}
+
+impl PrettyPrint for WindowSortSpec {
+    fn pretty_print(&self) -> Result<String> {
+        Ok(format!(
+            "{}{}",
+            self.key.pretty_print()?,
+            self.direction.pretty_print()?
+        ))
+    }
+}
+
+impl PrettyPrint for WindowFrame {
+    fn pretty_print(&self) -> Result<String> {
+        Ok(format!(
+            "{} BETWEEN {} AND {}",
+            self.units.pretty_print()?,
+            self.start.pretty_print()?,
+            self.end.pretty_print()?
+        ))
+    }
+}
+
+impl PrettyPrint for WindowFrameUnits {
+    fn pretty_print(&self) -> Result<String> {
+        Ok(match self {
+            WindowFrameUnits::Rows => "ROWS",
+            WindowFrameUnits::Range => "RANGE",
+        }
+        .to_string())
+    }
+}
+
+impl PrettyPrint for WindowFrameBound {
+    fn pretty_print(&self) -> Result<String> {
+        Ok(match self {
+            WindowFrameBound::UnboundedPreceding => "UNBOUNDED PRECEDING".to_string(),
+            WindowFrameBound::UnboundedFollowing => "UNBOUNDED FOLLOWING".to_string(),
+            WindowFrameBound::CurrentRow => "CURRENT ROW".to_string(),
+            WindowFrameBound::Preceding(n) => format!("{n} PRECEDING"),
+            WindowFrameBound::Following(n) => format!("{n} FOLLOWING"),
+        })
+    }
+}
+
 // The tier numbers here match the Expr tiers in the parser.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
 enum ExpressionTier {
@@ -764,7 +858,8 @@ impl Expression {
             | StringConstructor(_)
             | Subquery(_)
             | Tuple(_)
-            | HigherOrderFunction(_) => Bottom,
+            | HigherOrderFunction(_)
+            | Window(_) => Bottom,
         }
     }
 }
@@ -832,6 +927,7 @@ impl PrettyPrint for Expression {
             SubqueryComparison(sc) => sc.pretty_print(),
             HigherOrderFunction(hof) => hof.pretty_print(),
             ArrayCast(ac) => ac.pretty_print(),
+            Window(w) => w.pretty_print(),
         }
     }
 }

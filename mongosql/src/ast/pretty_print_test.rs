@@ -1295,3 +1295,101 @@ mod precedence_tests {
 //         input = "REDUCE(a, 1, *)"
 //     );
 // }
+
+mod window_functions {
+    use super::*;
+
+    // An empty OVER clause prints its parentheses, since `OVER` alone is not valid syntax.
+    expression_printer_test!(
+        empty_over_clause,
+        expected = "SUM(a) OVER ()",
+        input = "SUM(a) OVER ()"
+    );
+
+    expression_printer_test!(
+        partition_by_only,
+        expected = "SUM(a) OVER (PARTITION BY b, c)",
+        input = "SUM(a) OVER (PARTITION BY b, c)"
+    );
+
+    // An omitted sort direction is stored as Asc and printed explicitly, matching how a
+    // top-level ORDER BY prints.
+    expression_printer_test!(
+        order_by_prints_explicit_direction,
+        expected = "SUM(a) OVER (ORDER BY b ASC, c DESC)",
+        input = "SUM(a) OVER (ORDER BY b, c DESC)"
+    );
+
+    expression_printer_test!(
+        rows_frame,
+        expected = "SUM(a) OVER (ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING)",
+        input = "SUM(a) OVER (ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING)"
+    );
+
+    expression_printer_test!(
+        range_frame_with_unbounded_and_current_row,
+        expected = "SUM(a) OVER (ORDER BY b ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        input = "SUM(a) OVER (ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+    );
+
+    expression_printer_test!(
+        unbounded_following,
+        expected = "SUM(a) OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)",
+        input = "SUM(a) OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)"
+    );
+
+    // An absent frame is stored as None and prints as nothing, so it re-parses as None.
+    // This is what keeps the round trip exact and preserves the distinction between
+    // "no frame written" and an explicitly written default.
+    expression_printer_test!(
+        absent_frame_prints_nothing,
+        expected = "SUM(a) OVER (PARTITION BY b ORDER BY c ASC)",
+        input = "SUM(a) OVER (PARTITION BY b ORDER BY c)"
+    );
+
+    expression_printer_test!(
+        all_clauses,
+        expected =
+            "SUM(a) OVER (PARTITION BY b, c ORDER BY d DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        input = "SUM(a) OVER (PARTITION BY b, c ORDER BY d DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+    );
+
+    expression_printer_test!(
+        count_star,
+        expected = "COUNT(*) OVER ()",
+        input = "COUNT(*) OVER ()"
+    );
+
+    expression_printer_test!(
+        rank,
+        expected = "RANK() OVER (ORDER BY a ASC)",
+        input = "RANK() OVER (ORDER BY a)"
+    );
+
+    expression_printer_test!(
+        lag_with_default,
+        expected = "LAG(a, 1, 0) OVER (ORDER BY b ASC)",
+        input = "LAG(a, 1, 0) OVER (ORDER BY b)"
+    );
+
+    // A window call is Bottom tier, so it never needs wrapping in parentheses.
+    expression_printer_test!(
+        composes_with_binary_operators,
+        expected = "SUM(a) OVER () + 1",
+        input = "SUM(a) OVER () + 1"
+    );
+
+    // Identifiers colliding with the new reserved words must print delimited, or they
+    // would not re-parse.
+    expression_printer_test!(
+        reserved_word_identifier_is_delimited,
+        expected = "SUM(`over`) OVER (PARTITION BY `preceding`)",
+        input = "SUM(`over`) OVER (PARTITION BY `preceding`)"
+    );
+
+    query_printer_test!(
+        in_a_select_clause,
+        expected = "SELECT SUM(a) OVER (PARTITION BY b) AS s FROM foo",
+        input = "SELECT SUM(a) OVER (PARTITION BY b) AS s FROM foo"
+    );
+}

@@ -269,6 +269,7 @@ impl CachedSchema for Stage {
             Stage::Set(s) => &s.cache,
             Stage::Derived(s) => &s.cache,
             Stage::Unwind(s) => &s.cache,
+            Stage::Window(s) => &s.cache,
             Stage::MqlIntrinsic(MqlStage::EquiJoin(s)) => &s.cache,
             Stage::MqlIntrinsic(MqlStage::LateralJoin(s)) => &s.cache,
             Stage::MqlIntrinsic(MqlStage::MatchFilter(s)) => &s.cache,
@@ -355,17 +356,6 @@ impl CachedSchema for Stage {
                     Some(1)
                 } else {
                     source_result_set.max_size
-                };
-
-                // A helper to bind a field/alias to a schema.
-                // Used for embedding a group key or aggregation function under a datasource.
-                let schema_binding_doc = |field_or_alias: String, schema: Schema| {
-                    Schema::Document(Document {
-                        keys: map! { field_or_alias.clone() => schema },
-                        required: set! { field_or_alias },
-                        additional_properties: false,
-                        ..Default::default()
-                    })
                 };
 
                 let schema_env = g
@@ -502,6 +492,56 @@ impl CachedSchema for Stage {
                         }
                     })?;
                 Ok(source_result_set)
+            }
+            Stage::Window(w) => {
+                let source_result_set = w.source.schema(state)?;
+                let state = state.with_merged_schema_env(source_result_set.schema_env.clone());
+
+                // Partition and sort keys are compared against each other, so both must be
+                // statically self-comparable, exactly as group and sort keys are.
+                w.partition_by
+                    .iter()
+                    .enumerate()
+                    .try_for_each(|(index, key)| {
+                        let schema = key.schema(&state)?.upconvert_missing_to_null();
+                        if !state.check_self_comparable(&schema) {
+                            return Err(Error::GroupKeyNotSelfComparable(index, schema.into()));
+                        }
+                        Ok(())
+                    })?;
+                w.sort_by
+                    .iter()
+                    .enumerate()
+                    .try_for_each(|(index, spec)| match spec {
+                        SortSpecification::Asc(a) | SortSpecification::Desc(a) => {
+                            let schema = a.schema(&state)?;
+                            if !state.check_self_comparable(&schema) {
+                                return Err(Error::SortKeyNotSelfComparable(index, schema.into()));
+                            }
+                            Ok(())
+                        }
+                    })?;
+
+                // Unlike Group, this stage is ADDITIVE: $setWindowFields preserves every
+                // input field and appends. So start from the source environment rather than
+                // an empty one, and only add the window aliases under Bottom.
+                let schema_env = w.functions.iter().try_fold(
+                    source_result_set.schema_env.clone(),
+                    |acc, f| {
+                        Ok::<_, Error>(acc.modify_schema_for_datasource(
+                            binding_tuple::Key::bot(state.scope_level),
+                            schema_binding_doc(f.alias.clone(), f.window_expr.schema(&state)?),
+                            Schema::merge,
+                        ))
+                    },
+                )?;
+
+                Ok(ResultSet {
+                    schema_env: schema_env.simplify(),
+                    // Window functions add fields; they never add or remove documents.
+                    min_size: source_result_set.min_size,
+                    max_size: source_result_set.max_size,
+                })
             }
             Stage::Collection(c) => {
                 let schema =
@@ -892,6 +932,55 @@ impl CachedSchema for Stage {
             }
             Stage::Sentinel => unreachable!(),
         }
+    }
+}
+
+/// Binds a field or alias to a schema, for embedding under a datasource. Shared by the
+/// Group and Window arms of `check_schema`.
+fn schema_binding_doc(field_or_alias: String, schema: Schema) -> Schema {
+    Schema::Document(Document {
+        keys: map! { field_or_alias.clone() => schema },
+        required: set! { field_or_alias },
+        additional_properties: false,
+        ..Default::default()
+    })
+}
+
+impl WindowExpr {
+    pub fn schema(&self, state: &SchemaInferenceState) -> Result<Schema, Error> {
+        Ok(match self {
+            WindowExpr::Aggregation(a) => {
+                let arg_schema = a.arg.schema(state)?;
+                let schema = a.function.schema(state, (&a.arg, arg_schema))?;
+                match a.frame {
+                    // A bounded frame can be empty for documents near a partition edge,
+                    // in which case the accumulator has nothing to aggregate.
+                    Some(_) => Schema::AnyOf(set![schema, Schema::Atomic(Atomic::Null)]),
+                    None => schema,
+                }
+            }
+            WindowExpr::CountStar => Schema::AnyOf(set![
+                Schema::Atomic(Atomic::Integer),
+                Schema::Atomic(Atomic::Long)
+            ]),
+            // Rank operators are 1-based positive counts over the partition.
+            WindowExpr::Rank(_) => Schema::AnyOf(set![
+                Schema::Atomic(Atomic::Integer),
+                Schema::Atomic(Atomic::Long)
+            ]),
+            WindowExpr::Shift(sh) => {
+                // Shifting past a partition edge yields the default, which is null when
+                // none was given, so the result is always nullable.
+                let mut schemas: std::collections::BTreeSet<Schema> = set![
+                    sh.output.schema(state)?.upconvert_missing_to_null(),
+                    Schema::Atomic(Atomic::Null)
+                ];
+                if let Some(d) = &sh.default {
+                    schemas.insert(d.schema(state)?.upconvert_missing_to_null());
+                }
+                Schema::AnyOf(schemas)
+            }
+        })
     }
 }
 

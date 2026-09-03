@@ -39,6 +39,7 @@ use crate::{
         binding_tuple::Key, optimizer::util::insert_field_path_and_all_ancestors, visitor::Visitor,
         ExistsExpr, Expression, FieldAccess, FieldPath, Filter, Group, MatchFilter, MatchQuery,
         MqlStage, Project, ReferenceExpr, Sort, Stage, SubqueryComparison, SubqueryExpr, Unwind,
+        Window,
     },
     util::unique_linked_hash_map::UniqueLinkedHashMap,
 };
@@ -88,6 +89,19 @@ impl Group {
     }
 }
 
+impl Window {
+    /// The window outputs, reported as opaque rather than through `defines`, because a
+    /// window function cannot be substituted into a referencing expression the way an
+    /// aliased group key can. Reporting them is what stops a Filter from being sunk below
+    /// this stage, which would change which rows fall into each partition.
+    pub fn opaque_field_defines(&self) -> HashSet<FieldPath> {
+        self.functions
+            .iter()
+            .map(|f| FieldPath::new(Key::bot(self.scope), vec![f.alias.clone()]))
+            .collect()
+    }
+}
+
 impl Unwind {
     pub fn opaque_field_defines(&self) -> HashSet<FieldPath> {
         let mut ret = HashSet::new();
@@ -112,6 +126,7 @@ impl Stage {
         match self {
             Stage::Group(n) => n.opaque_field_defines(),
             Stage::Unwind(n) => n.opaque_field_defines(),
+            Stage::Window(n) => n.opaque_field_defines(),
             _ => HashSet::new(),
         }
     }
