@@ -20,28 +20,23 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
 };
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// Collects the window functions in a SELECT clause, de-duplicated on their printed form so
-/// two textually identical calls share a single output field. Insertion order is preserved.
-fn collect_window_functions(
-    select_clause: &ast::SelectClause,
-) -> Vec<(String, ast::WindowFunctionExpr)> {
+/// Collects the window functions in a SELECT clause, de-duplicated on structural equality so
+/// two identical calls share a single output field. Insertion order is preserved.
+fn collect_window_functions(select_clause: &ast::SelectClause) -> Vec<ast::WindowFunctionExpr> {
     #[derive(Default)]
     struct WindowCollector {
-        found: Vec<(String, ast::WindowFunctionExpr)>,
+        found: Vec<ast::WindowFunctionExpr>,
     }
     impl ast::visitor_ref::VisitorRef for WindowCollector {
         fn visit_window_function_expr(&mut self, node: &ast::WindowFunctionExpr) {
-            let key = ast::Expression::Window(node.clone())
-                .pretty_print()
-                .unwrap();
-            if !self.found.iter().any(|(k, _)| *k == key) {
-                self.found.push((key, node.clone()));
+            if !self.found.contains(node) {
+                self.found.push(node.clone());
             }
         }
     }
@@ -50,29 +45,11 @@ fn collect_window_functions(
     collector.found
 }
 
-/// The bucketing key for a window specification: two functions share a `$setWindowFields`
-/// stage only when their partitioning and ordering match. The frame is deliberately excluded
-/// because it is per-output-field.
-fn window_spec_key(spec: &ast::WindowSpec) -> String {
-    let partition = spec
-        .partition_by
-        .iter()
-        .map(|e| e.pretty_print().unwrap())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let order = spec
-        .order_by
-        .iter()
-        .map(|s| {
-            format!(
-                "{}{}",
-                s.key.pretty_print().unwrap(),
-                s.direction.pretty_print().unwrap()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("PARTITION BY {partition} ORDER BY {order}")
+/// Whether two window specifications share a `$setWindowFields` stage: they do so only when
+/// their partitioning and ordering match. The frame is deliberately excluded because it is
+/// per-output-field.
+fn window_specs_match(a: &ast::WindowSpec, b: &ast::WindowSpec) -> bool {
+    a.partition_by == b.partition_by && a.order_by == b.order_by
 }
 
 fn algebrize_window_frame(frame: ast::WindowFrame) -> mir::WindowFrame {
@@ -362,7 +339,9 @@ pub struct Algebrizer<'a> {
     /// source expression and mapping to the field access that reads the hoisted output.
     /// Populated by `algebrize_window_functions` before the SELECT clause is algebrized, so
     /// `algebrize_expression` resolves a window call directly rather than by name.
-    window_exprs: Rc<HashMap<String, mir::Expression>>,
+    /// Association list rather than a map because [`ast::WindowFunctionExpr`] is only
+    /// `PartialEq` (it can contain `f64` literals), so it cannot be a `HashMap` key.
+    window_exprs: Rc<Vec<(ast::WindowFunctionExpr, mir::Expression)>>,
 }
 
 /// ExpressionContext contains information about the context in which an expression is being
@@ -455,11 +434,14 @@ impl<'a> Algebrizer<'a> {
             allow_order_by_missing_columns,
             clause_type: RefCell::new(clause_type),
             expression_context,
-            window_exprs: Rc::new(HashMap::new()),
+            window_exprs: Rc::new(Vec::new()),
         }
     }
 
-    fn with_window_exprs(&self, window_exprs: HashMap<String, mir::Expression>) -> Self {
+    fn with_window_exprs(
+        &self,
+        window_exprs: Vec<(ast::WindowFunctionExpr, mir::Expression)>,
+    ) -> Self {
         Self {
             clause_type: RefCell::new(*self.clause_type.borrow()),
             expression_context: self.expression_context.clone(),
@@ -470,8 +452,8 @@ impl<'a> Algebrizer<'a> {
     }
 
     /// Hoists every window function in the SELECT clause into one or more `Stage::Window`s,
-    /// returning the new plan and a map from each window call's printed form to the
-    /// expression that reads its output.
+    /// returning the new plan and, for each window call, the expression that reads its
+    /// output.
     ///
     /// MQL allows a single partitionBy/sortBy per `$setWindowFields` but a per-output-field
     /// window, so functions sharing a specification share a stage and differing
@@ -480,26 +462,24 @@ impl<'a> Algebrizer<'a> {
         &self,
         select_clause: &ast::SelectClause,
         source: mir::Stage,
-    ) -> Result<(mir::Stage, HashMap<String, mir::Expression>)> {
+    ) -> Result<(mir::Stage, Vec<(ast::WindowFunctionExpr, mir::Expression)>)> {
         let collected = collect_window_functions(select_clause);
         if collected.is_empty() {
-            return Ok((source, HashMap::new()));
+            return Ok((source, Vec::new()));
         }
 
         *self.clause_type.borrow_mut() = ClauseType::Window;
 
         // Bucket by specification, preserving first-seen order so the emitted chain is
-        // deterministic. The key is the printed spec, which is exactly the equality we want.
-        let mut buckets: Vec<(ast::WindowSpec, Vec<(String, ast::WindowFunctionExpr)>)> =
-            Vec::new();
-        for (key, w) in collected {
-            let spec_key = window_spec_key(&w.over);
+        // deterministic.
+        let mut buckets: Vec<(ast::WindowSpec, Vec<ast::WindowFunctionExpr>)> = Vec::new();
+        for w in collected {
             match buckets
                 .iter_mut()
-                .find(|(spec, _)| window_spec_key(spec) == spec_key)
+                .find(|(spec, _)| window_specs_match(spec, &w.over))
             {
-                Some((_, fns)) => fns.push((key, w)),
-                None => buckets.push((w.over.clone(), vec![(key, w)])),
+                Some((_, fns)) => fns.push(w),
+                None => buckets.push((w.over.clone(), vec![w])),
             }
         }
 
@@ -513,7 +493,7 @@ impl<'a> Algebrizer<'a> {
 
         let mut plan = source;
         let mut next_id = 1usize;
-        let mut window_exprs = HashMap::new();
+        let mut window_exprs: Vec<(ast::WindowFunctionExpr, mir::Expression)> = Vec::new();
         for (spec, fns) in buckets {
             let partition_by = spec
                 .partition_by
@@ -538,14 +518,14 @@ impl<'a> Algebrizer<'a> {
 
             let mut functions = Vec::new();
             let mut aliases = Vec::new();
-            for (key, w) in fns {
+            for w in fns {
                 let alias = format!("_wf{next_id}");
                 next_id += 1;
                 functions.push(mir::AliasedWindowFunction {
                     alias: alias.clone(),
                     window_expr: expression_algebrizer.algebrize_window_expr(&w)?,
                 });
-                aliases.push((key, alias));
+                aliases.push((w, alias));
             }
 
             plan = mir::Stage::Window(mir::Window {
@@ -560,14 +540,12 @@ impl<'a> Algebrizer<'a> {
             // from the post-window environment rather than the pre-window one.
             let result_set = plan.schema(&self.schema_inference_state())?;
             let post_window = self.with_merged_mappings(result_set.schema_env)?;
-            for (key, alias) in aliases {
-                window_exprs.insert(
-                    key,
-                    post_window.construct_field_access_expr(
-                        mir::Expression::Reference(Key::bot(self.scope_level).into()),
-                        alias,
-                    )?,
-                );
+            for (w, alias) in aliases {
+                let expr = post_window.construct_field_access_expr(
+                    mir::Expression::Reference(Key::bot(self.scope_level).into()),
+                    alias,
+                )?;
+                window_exprs.push((w, expr));
             }
         }
 
@@ -676,7 +654,7 @@ impl<'a> Algebrizer<'a> {
             clause_type: RefCell::new(*self.clause_type.borrow()),
             expression_context: self.expression_context.clone(),
             // A subquery hoists its own window functions; it must not see the parent's.
-            window_exprs: Rc::new(HashMap::new()),
+            window_exprs: Rc::new(Vec::new()),
         }
     }
 
@@ -1868,13 +1846,16 @@ impl<'a> Algebrizer<'a> {
             // is algebrized, so by the time we get here the field access that reads the
             // hoisted output has already been built. A missing entry means the window call
             // appeared somewhere we never hoist from, which the rewrite pass rejects first.
-            ast::Expression::Window(w) => {
-                let key = ast::Expression::Window(w).pretty_print().unwrap();
-                self.window_exprs
-                    .get(&key)
-                    .cloned()
-                    .ok_or(Error::WindowFunctionWithoutOver(key))
-            }
+            ast::Expression::Window(w) => self
+                .window_exprs
+                .iter()
+                .find(|(hoisted, _)| *hoisted == w)
+                .map(|(_, expr)| expr.clone())
+                .ok_or_else(|| {
+                    Error::WindowFunctionWithoutOver(
+                        ast::Expression::Window(w).pretty_print().unwrap(),
+                    )
+                }),
             ast::Expression::ArrayCast(_) => unreachable!("ARRAY_CAST should have been rewritten"),
         }
     }
